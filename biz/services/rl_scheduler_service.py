@@ -395,8 +395,137 @@ class RLSchedulerService:
         self.save_results(results)
         if hasattr(env, 'production_logs') and env.production_logs:
             self.save_production_logs(env.production_logs)
-            
+
+        # [요약 리포트] 학습 추론 후 최종 상태 기반 요약 출력/저장
+        # 1) 제품 공정별 장비모델별 대수 할당 결과
+        # 2) 마지막 공정 기준 제품별 계획달성률
+        alloc_df = self.build_allocation_report(env)
+        achv_df = self.build_last_oper_achievement_report(env)
+        self.save_summary_reports(alloc_df, achv_df, tag='inference')
+
         return results
+
+    def _get_last_oper_per_product(self, env):
+        """제품별 마지막 공정(OPER_ID)을 OPER_SEQ 기준으로 결정한다.
+
+        WIP 데이터에 OPER_SEQ가 있으면 해당 값으로, 없으면 환경 내 공정 순서로 결정.
+        반환: {product: last_oper_id}
+        """
+        last_oper = {}
+        wip_df = self.data.get('wip_info', pd.DataFrame()) if hasattr(self, 'data') else None
+        # env.data를 우선 사용 (test/실제 모두 안전)
+        try:
+            wip_df = env.data.get('wip_info', pd.DataFrame())
+        except Exception:
+            wip_df = pd.DataFrame()
+
+        if wip_df is not None and not wip_df.empty and 'OPER_SEQ' in wip_df.columns:
+            for prod, sub in wip_df.groupby('PLAN_PROD_KEY'):
+                try:
+                    sub_sorted = sub.sort_values('OPER_SEQ', ascending=False)
+                    last_oper[prod] = sub_sorted.iloc[0]['OPER_ID']
+                except Exception:
+                    pass
+
+        # 누락된 제품은 환경의 마지막 process로 폴백
+        for p_name in env.products:
+            if p_name in last_oper:
+                continue
+            if str(p_name).startswith('PAD_PROD_'):
+                continue
+            real_procs = [pr for pr in env.processes if not str(pr).startswith('PAD_PROC_')]
+            if real_procs:
+                last_oper[p_name] = real_procs[-1]
+        return last_oper
+
+    def build_allocation_report(self, env):
+        """[1] 제품 공정별 장비모델별 대수 할당 결과 DataFrame을 생성한다.
+
+        env.active_eqp (num_prods, num_procs, num_models) 행렬을 기반으로 EQP_QTY > 0인
+        조합만 추출하여 (PLAN_PROD_KEY, OPER_ID, EQP_MODEL_CD, EQP_QTY) 형식으로 반환.
+        """
+        rows = []
+        for p_idx, p_name in enumerate(env.products):
+            if str(p_name).startswith('PAD_PROD_'):
+                continue
+            for s_idx, s_name in enumerate(env.processes):
+                if str(s_name).startswith('PAD_PROC_'):
+                    continue
+                for m_idx, m_name in enumerate(env.models):
+                    qty = float(env.active_eqp[p_idx, s_idx, m_idx])
+                    if qty > 0:
+                        rows.append({
+                            'PLAN_PROD_KEY': p_name,
+                            'OPER_ID': s_name,
+                            'EQP_MODEL_CD': m_name,
+                            'EQP_QTY': int(round(qty))
+                        })
+        df = pd.DataFrame(rows, columns=['PLAN_PROD_KEY', 'OPER_ID', 'EQP_MODEL_CD', 'EQP_QTY'])
+        if not df.empty:
+            df = df.sort_values(['PLAN_PROD_KEY', 'OPER_ID', 'EQP_MODEL_CD']).reset_index(drop=True)
+        return df
+
+    def build_last_oper_achievement_report(self, env):
+        """[2] 마지막 공정(OPER_SEQ 최대) 기준 제품별 계획달성률 DataFrame을 생성한다.
+
+        반환 컬럼: PLAN_PROD_KEY, LAST_OPER_ID, PLAN_QTY, PRODUCED_QTY, ACHIEVEMENT_RATE(%)
+        """
+        last_oper_map = self._get_last_oper_per_product(env)
+        rows = []
+        for p_name, last_oper in last_oper_map.items():
+            if p_name not in env.prod_idx or last_oper not in env.proc_idx:
+                continue
+            p_idx = env.prod_idx[p_name]
+            s_idx = env.proc_idx[last_oper]
+            prod_qty = float(env.produced[p_idx, s_idx])
+            plan_qty = float(env.plan[p_idx, s_idx])
+            rate = (prod_qty / plan_qty * 100.0) if plan_qty > 0 else 0.0
+            rows.append({
+                'PLAN_PROD_KEY': p_name,
+                'LAST_OPER_ID': last_oper,
+                'PLAN_QTY': plan_qty,
+                'PRODUCED_QTY': round(prod_qty, 2),
+                'ACHIEVEMENT_RATE(%)': round(rate, 2)
+            })
+        df = pd.DataFrame(rows, columns=['PLAN_PROD_KEY', 'LAST_OPER_ID', 'PLAN_QTY', 'PRODUCED_QTY', 'ACHIEVEMENT_RATE(%)'])
+        if not df.empty:
+            df = df.sort_values('PLAN_PROD_KEY').reset_index(drop=True)
+        return df
+
+    def save_summary_reports(self, alloc_df, achv_df, tag='inference'):
+        """할당/달성률 리포트를 콘솔 출력 및 엑셀로 저장한다."""
+        print("\n" + "=" * 80)
+        print(f" [요약 리포트 1] 제품 공정별 장비모델별 대수 할당 결과 ({tag})")
+        print("=" * 80)
+        if alloc_df is None or alloc_df.empty:
+            print(" - 할당된 장비가 없습니다.")
+        else:
+            print(alloc_df.to_string(index=False))
+
+        print("\n" + "=" * 80)
+        print(f" [요약 리포트 2] 마지막 공정 기준 제품별 계획달성률 ({tag})")
+        print("=" * 80)
+        if achv_df is None or achv_df.empty:
+            print(" - 달성률을 산출할 제품이 없습니다.")
+        else:
+            print(achv_df.to_string(index=False))
+            avg_rate = achv_df['ACHIEVEMENT_RATE(%)'].mean()
+            print(f"\n -> 평균 계획달성률(마지막 공정 기준): {round(avg_rate, 2)}%")
+        print("=" * 80)
+
+        log_dir = os.path.join(os.getcwd(), 'logs', 'simulation_logs')
+        os.makedirs(log_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_path = os.path.join(log_dir, f'summary_{tag}_{timestamp}.xlsx')
+        try:
+            with pd.ExcelWriter(file_path) as writer:
+                (alloc_df if alloc_df is not None else pd.DataFrame()).to_excel(
+                    writer, sheet_name='eqp_allocation', index=False)
+                (achv_df if achv_df is not None else pd.DataFrame()).to_excel(
+                    writer, sheet_name='last_oper_achievement', index=False)
+            print(f"[성공] 요약 리포트가 엑셀로 저장되었습니다: {file_path}")
+        except Exception as e:
+            print(f"[경고] 요약 리포트 엑셀 저장 실패: {e}")
 
     def save_production_logs(self, logs):
         if not logs:
@@ -494,6 +623,11 @@ class RLSchedulerService:
         heu_results['TRANSFERS'] = heu_transfers
         
         print(f" - 휴리스틱 평균 계획달성률: {heu_avg}% / 총 장비 전환 횟수: {heu_transfers}회")
+
+        # 휴리스틱 결과: 장비 할당 / 마지막 공정 기준 달성률 리포트
+        heu_alloc_df = self.build_allocation_report(env_heu)
+        heu_last_df = self.build_last_oper_achievement_report(env_heu)
+        self.save_summary_reports(heu_alloc_df, heu_last_df, tag='heuristic')
         
         # 4. 강화학습 (RL PPO) 시뮬레이션
         print("\n[3단계] 강화학습(RL PPO) 모델 학습 및 시뮬레이션 진행 중...")
@@ -535,6 +669,11 @@ class RLSchedulerService:
         rl_results['TRANSFERS'] = rl_transfers
         
         print(f" - 강화학습 평균 계획달성률: {rl_avg}% / 총 장비 전환 횟수: {rl_transfers}회")
+
+        # 강화학습 결과: 장비 할당 / 마지막 공정 기준 달성률 리포트
+        rl_alloc_df = self.build_allocation_report(env_rl)
+        rl_last_df = self.build_last_oper_achievement_report(env_rl)
+        self.save_summary_reports(rl_alloc_df, rl_last_df, tag='rl')
         
         # 5. 최종 비교 테이블 생성 및 출력
         print("\n" + "="*80)
