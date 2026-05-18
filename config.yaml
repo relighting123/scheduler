@@ -1,0 +1,13 @@
+app:
+  worker_processes: 4
+  log_level: INFO
+
+databases:
+  primary:
+    user: "dispatcher"
+    password: "dispatcher"
+    dsn: "localhost:1521/XEPDB1"
+  secondary:
+    user: "dispatcher"
+    password: "dispatcher"
+    dsn: "localhost:1521/XEPDB1"
