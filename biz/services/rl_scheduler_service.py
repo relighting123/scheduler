@@ -1,4 +1,5 @@
 import os
+import re
 import pandas as pd
 import numpy as np
 import torch
@@ -350,6 +351,122 @@ class RLSchedulerService:
         model.save("scheduler_ppo_model")
         print("학습 완료 및 모델 저장됨")
 
+    def _build_final_allocation_df(self, env):
+        """최종 시뮬레이션 시점의 제품/공정/장비모델별 대수 집계"""
+        rows = []
+        for p_idx, prod in enumerate(env.products):
+            if prod.startswith("PAD_PROD_"):
+                continue
+            for s_idx, oper in enumerate(env.processes):
+                if oper.startswith("PAD_PROC_"):
+                    continue
+                for m_idx, model in enumerate(env.models):
+                    qty = float(env.active_eqp[p_idx, s_idx, m_idx])
+                    if qty <= 0:
+                        continue
+                    rounded_qty = int(round(qty)) if np.isclose(qty, round(qty)) else round(qty, 4)
+                    rows.append({
+                        "PLAN_PROD_KEY": prod,
+                        "OPER_ID": oper,
+                        "EQP_MODEL_CD": model,
+                        "ALLOCATED_EQP_QTY": rounded_qty
+                    })
+
+        allocation_df = pd.DataFrame(
+            rows,
+            columns=["PLAN_PROD_KEY", "OPER_ID", "EQP_MODEL_CD", "ALLOCATED_EQP_QTY"]
+        )
+        if not allocation_df.empty:
+            allocation_df = allocation_df.sort_values(
+                by=["PLAN_PROD_KEY", "OPER_ID", "EQP_MODEL_CD"]
+            ).reset_index(drop=True)
+        return allocation_df
+
+    def _build_last_process_achievement_df(self, env, data):
+        """제품별 마지막 공정의 계획달성률 집계"""
+        last_oper_by_prod = {}
+        wip_df = data.get('wip_info', pd.DataFrame())
+
+        if not wip_df.empty and {'PLAN_PROD_KEY', 'OPER_ID', 'OPER_SEQ'}.issubset(wip_df.columns):
+            tmp = wip_df.copy()
+            tmp['OPER_SEQ_NUM'] = pd.to_numeric(tmp['OPER_SEQ'], errors='coerce')
+            tmp = tmp.sort_values(by=['PLAN_PROD_KEY', 'OPER_SEQ_NUM', 'OPER_ID'])
+            last_rows = tmp.groupby('PLAN_PROD_KEY', as_index=False).tail(1)
+            for _, row in last_rows.iterrows():
+                last_oper_by_prod[row['PLAN_PROD_KEY']] = row['OPER_ID']
+
+        process_candidates = [proc for proc in env.processes if not proc.startswith("PAD_PROC_")]
+        for prod in [p for p in env.products if not p.startswith("PAD_PROD_")]:
+            if prod in last_oper_by_prod:
+                continue
+            if not process_candidates:
+                continue
+            fallback_oper = max(
+                process_candidates,
+                key=lambda oper: int(re.search(r"\d+", oper).group()) if re.search(r"\d+", oper) else -1
+            )
+            last_oper_by_prod[prod] = fallback_oper
+
+        rows = []
+        for prod in [p for p in env.products if not p.startswith("PAD_PROD_")]:
+            oper = last_oper_by_prod.get(prod)
+            if oper is None:
+                continue
+            p_idx = env.prod_idx.get(prod)
+            s_idx = env.proc_idx.get(oper)
+            if p_idx is None or s_idx is None:
+                continue
+
+            produced_qty = float(env.produced[p_idx, s_idx])
+            plan_qty = float(env.plan[p_idx, s_idx])
+            rate = (produced_qty / plan_qty * 100.0) if plan_qty > 0 else 0.0
+
+            rows.append({
+                "PLAN_PROD_KEY": prod,
+                "LAST_OPER_ID": oper,
+                "PRODUCED_QTY": round(produced_qty, 4),
+                "PLAN_QTY": round(plan_qty, 4),
+                "ACHIEVEMENT_RATE(%)": round(rate, 2)
+            })
+
+        achievement_df = pd.DataFrame(
+            rows,
+            columns=["PLAN_PROD_KEY", "LAST_OPER_ID", "PRODUCED_QTY", "PLAN_QTY", "ACHIEVEMENT_RATE(%)"]
+        )
+        if not achievement_df.empty:
+            achievement_df = achievement_df.sort_values(by=["PLAN_PROD_KEY"]).reset_index(drop=True)
+        return achievement_df
+
+    def save_inference_summary(self, rule_timekey, allocation_df, achievement_df, file_prefix='inference_summary'):
+        """요청된 핵심 결과 요약을 콘솔/엑셀로 저장"""
+        print("\n[1] 제품 공정별 장비모델별 대수 할당 결과")
+        print("-" * 80)
+        if allocation_df.empty:
+            print("집계 가능한 장비 할당 결과가 없습니다.")
+        else:
+            print(allocation_df.to_string(index=False))
+        print("-" * 80)
+
+        print("\n[2] 마지막 공정 기준 제품별 계획달성률")
+        print("-" * 80)
+        if achievement_df.empty:
+            print("집계 가능한 마지막 공정 계획달성률 정보가 없습니다.")
+        else:
+            print(achievement_df.to_string(index=False))
+        print("-" * 80)
+
+        log_dir = os.path.join(os.getcwd(), 'logs', 'simulation_logs')
+        os.makedirs(log_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_timekey = str(rule_timekey).replace(" ", "_")
+        file_path = os.path.join(log_dir, f"{file_prefix}_{safe_timekey}_{timestamp}.xlsx")
+
+        with pd.ExcelWriter(file_path) as writer:
+            allocation_df.to_excel(writer, sheet_name='EQP_ALLOCATION', index=False)
+            achievement_df.to_excel(writer, sheet_name='LAST_OPER_ACH', index=False)
+
+        print(f"[성공] 추론 요약 리포트가 엑셀로 저장되었습니다: {file_path}")
+
     def run_inference(self, rule_timekey=None):
         """추론을 수행하고 결과를 DB에 저장합니다."""
         data = self.fetch_data()
@@ -395,6 +512,10 @@ class RLSchedulerService:
         self.save_results(results)
         if hasattr(env, 'production_logs') and env.production_logs:
             self.save_production_logs(env.production_logs)
+
+        allocation_df = self._build_final_allocation_df(env)
+        achievement_df = self._build_last_process_achievement_df(env, data)
+        self.save_inference_summary(rule_timekey, allocation_df, achievement_df)
             
         return results
 
@@ -570,6 +691,15 @@ class RLSchedulerService:
         
         print(comparison_df.to_string(index=False))
         print("="*80)
+
+        rl_allocation_df = self._build_final_allocation_df(env_rl)
+        rl_last_oper_achievement_df = self._build_last_process_achievement_df(env_rl, data)
+        self.save_inference_summary(
+            rule_timekey='benchmark',
+            allocation_df=rl_allocation_df,
+            achievement_df=rl_last_oper_achievement_df,
+            file_prefix='combinatorial_inference_summary'
+        )
         
         # 엑셀 리포트 저장
         log_dir = os.path.join(os.getcwd(), 'logs', 'simulation_logs')
