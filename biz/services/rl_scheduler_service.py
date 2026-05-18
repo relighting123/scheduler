@@ -437,14 +437,41 @@ class RLSchedulerService:
             achievement_df = achievement_df.sort_values(by=["PLAN_PROD_KEY"]).reset_index(drop=True)
         return achievement_df
 
+    def _build_allocation_pivot_df(self, allocation_df):
+        """장비모델을 컬럼으로 피벗한 장비 대수 집계"""
+        if allocation_df.empty:
+            return pd.DataFrame(columns=["PLAN_PROD_KEY", "OPER_ID"])
+
+        pivot_df = allocation_df.pivot_table(
+            index=["PLAN_PROD_KEY", "OPER_ID"],
+            columns="EQP_MODEL_CD",
+            values="ALLOCATED_EQP_QTY",
+            aggfunc="sum",
+            fill_value=0
+        ).reset_index()
+        pivot_df.columns.name = None
+
+        model_cols = [col for col in pivot_df.columns if col not in ["PLAN_PROD_KEY", "OPER_ID"]]
+        for col in model_cols:
+            numeric_values = pd.to_numeric(pivot_df[col], errors='coerce').fillna(0.0)
+            if np.all(np.isclose(numeric_values, np.round(numeric_values))):
+                pivot_df[col] = np.round(numeric_values).astype(int)
+            else:
+                pivot_df[col] = numeric_values.round(4)
+
+        pivot_df = pivot_df.sort_values(by=["PLAN_PROD_KEY", "OPER_ID"]).reset_index(drop=True)
+        return pivot_df
+
     def save_inference_summary(self, rule_timekey, allocation_df, achievement_df, file_prefix='inference_summary'):
         """요청된 핵심 결과 요약을 콘솔/엑셀로 저장"""
+        allocation_pivot_df = self._build_allocation_pivot_df(allocation_df)
+
         print("\n[1] 제품 공정별 장비모델별 대수 할당 결과")
         print("-" * 80)
-        if allocation_df.empty:
+        if allocation_pivot_df.empty:
             print("집계 가능한 장비 할당 결과가 없습니다.")
         else:
-            print(allocation_df.to_string(index=False))
+            print(allocation_pivot_df.to_string(index=False))
         print("-" * 80)
 
         print("\n[2] 마지막 공정 기준 제품별 계획달성률")
@@ -462,6 +489,7 @@ class RLSchedulerService:
         file_path = os.path.join(log_dir, f"{file_prefix}_{safe_timekey}_{timestamp}.xlsx")
 
         with pd.ExcelWriter(file_path) as writer:
+            allocation_pivot_df.to_excel(writer, sheet_name='EQP_ALLOCATION_PIVOT', index=False)
             allocation_df.to_excel(writer, sheet_name='EQP_ALLOCATION', index=False)
             achievement_df.to_excel(writer, sheet_name='LAST_OPER_ACH', index=False)
 
