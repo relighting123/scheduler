@@ -193,21 +193,39 @@ class SchedulerEnv(gym.Env):
                         'MODEL': self.models[t_model]
                     })
                     
-                # If no IDLE, pull from another active node
+                # If no IDLE, pull from another active node (Priority-based: pull from least needed node first)
                 if not moved:
+                    best_src_p, best_src_s = None, None
+                    min_priority = float('inf')
+                    
                     for p in range(self.num_prods):
                         for s in range(self.num_procs):
                             if self.active_eqp[p, s, t_model] > 0 and (p != t_prod or s != t_proc):
-                                self.active_eqp[p, s, t_model] -= 1
-                                self.target_eqp[t_prod, t_proc, t_model] += 1
-                                moved = True
-                                transfers.append({
-                                    'FROM_PROD': self.products[p], 'FROM_PROC': self.processes[s],
-                                    'TO_PROD': self.products[t_prod], 'TO_PROC': self.processes[t_proc],
-                                    'MODEL': self.models[t_model]
-                                })
-                                break
-                        if moved: break
+                                uph = 0.0
+                                st_val = self.st_matrix[p, s, t_model]
+                                if st_val > 0.0:
+                                    uph = 60.0 / st_val
+                                    
+                                # Priority: Lower priority means the equipment is less needed here.
+                                # If UPH is 0, this equipment model cannot process this product at all, so priority is -1.0 (highest priority to pull).
+                                if uph == 0.0:
+                                    priority = -1.0
+                                else:
+                                    priority = self.wip[p, s] / uph
+                                    
+                                if priority < min_priority:
+                                    min_priority = priority
+                                    best_src_p, best_src_s = p, s
+                                    
+                    if best_src_p is not None:
+                        self.active_eqp[best_src_p, best_src_s, t_model] -= 1
+                        self.target_eqp[t_prod, t_proc, t_model] += 1
+                        moved = True
+                        transfers.append({
+                            'FROM_PROD': self.products[best_src_p], 'FROM_PROC': self.processes[best_src_s],
+                            'TO_PROD': self.products[t_prod], 'TO_PROC': self.processes[t_proc],
+                            'MODEL': self.models[t_model]
+                        })
                     
         # Simulate production
         step_production = 0.0
