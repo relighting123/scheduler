@@ -9,6 +9,10 @@ class HeuristicExpert:
 
     def select_action(self):
         """환경 상태(WIP, ST 등)를 분석하여 가장 최적의 장비 이동 액션을 반환합니다."""
+        # 초반(current_step == 0)에는 장비 전환 생성이 있을 수 없음
+        if self.env.current_step == 0:
+            return 0
+            
         wip = self.env.wip
         
         priorities = np.zeros((self.num_prods, self.num_procs))
@@ -84,4 +88,56 @@ class HeuristicExpert:
             target_idx = best_p * (self.env.num_procs * self.env.num_models) + best_s * self.env.num_models + src_m
             return target_idx + 1
             
+        return 0
+
+
+class OptimalExpert:
+    def __init__(self, env):
+        self.env = env
+        self.num_prods = env.num_prods
+        self.num_procs = env.num_procs
+        self.num_models = env.num_models
+        
+        # Define target allocation matrix
+        self.target = np.zeros((self.num_prods, self.num_procs, self.num_models))
+        
+        p_idx = env.prod_idx
+        s_idx = env.proc_idx
+        m_idx = env.model_idx
+        
+        # Combinatorial Scenario Target Allocation:
+        # P1: MODEL_A 5 units on OP10, 5 units on OP20
+        # P2: MODEL_B 3 units on OP10, 3 units on OP20
+        # P3: MODEL_C 2 units on OP10, 3 units on OP20
+        # P3: MODEL_B 1 unit on OP10, 1 unit on OP20
+        if 'P1' in p_idx and 'OP10' in s_idx and 'MODEL_A' in m_idx:
+            self.target[p_idx['P1'], s_idx['OP10'], m_idx['MODEL_A']] = 5
+            self.target[p_idx['P1'], s_idx['OP20'], m_idx['MODEL_A']] = 5
+            
+            self.target[p_idx['P2'], s_idx['OP10'], m_idx['MODEL_B']] = 3
+            self.target[p_idx['P2'], s_idx['OP20'], m_idx['MODEL_B']] = 3
+            
+            self.target[p_idx['P3'], s_idx['OP10'], m_idx['MODEL_C']] = 2
+            self.target[p_idx['P3'], s_idx['OP20'], m_idx['MODEL_C']] = 3
+            
+            self.target[p_idx['P3'], s_idx['OP10'], m_idx['MODEL_B']] = 1
+            self.target[p_idx['P3'], s_idx['OP20'], m_idx['MODEL_B']] = 1
+
+    def select_action(self):
+        """Finds the next equipment move to match the target optimal allocation."""
+        for p in range(self.num_prods):
+            for s in range(self.num_procs):
+                for m in range(self.num_models):
+                    curr = self.env.active_eqp[p, s, m] + self.env.target_eqp[p, s, m]
+                    tgt = self.target[p, s, m]
+                    if curr < tgt:
+                        # Find a source where current allocation > target allocation
+                        for sp in range(self.num_prods):
+                            for ss in range(self.num_procs):
+                                scurr = self.env.active_eqp[sp, ss, m]
+                                stgt = self.target[sp, ss, m]
+                                if scurr > stgt:
+                                    # Target index for this move
+                                    target_idx = p * (self.env.num_procs * self.env.num_models) + s * self.env.num_models + m
+                                    return target_idx + 1
         return 0

@@ -281,10 +281,6 @@ class RLSchedulerService:
         for _ in range(num_samples):
             action = expert.select_action()
             
-            if action == 0:
-                # If no clear expert move, default to random to avoid getting stuck
-                action = env.action_space.sample()
-            
             obs_list.append(obs.copy())
             action_list.append(action)
             
@@ -337,7 +333,7 @@ class RLSchedulerService:
         else:
             env = DummyVecEnv([make_env])
         
-        model = PPO("MlpPolicy", env, batch_size=batch_size, n_steps=n_steps, verbose=1)
+        model = PPO("MlpPolicy", env, batch_size=batch_size, n_steps=n_steps, ent_coef=0.01, verbose=1)
         
         if pretrain_bc:
             single_env = SchedulerEnv(data=data)
@@ -392,6 +388,8 @@ class RLSchedulerService:
                         'EQP_QTY': 1
                     })
             
+        # 최종 실적 및 장비 가동 요약 출력
+        env.print_final_summary(method_name="inference")
         self.save_results(results)
         if hasattr(env, 'production_logs') and env.production_logs:
             self.save_production_logs(env.production_logs)
@@ -444,23 +442,41 @@ class RLSchedulerService:
         self.init_combinatorial_scenario()
         data = self.fetch_data()
         
-        # 2. 정답지 (Ground Truth / Optimal) 계산 및 정의
-        # P1: MODEL_A 10대 올인 (OP10 5대, OP20 5대) -> 24시간 * 100 UPH * 5대 = 12,000개 (100%)
-        # P2: MODEL_B 6대 투입 (OP10 3대, OP20 3대) -> 24시간 * 120 UPH * 3대 = 8,640개 (100% 달성)
-        # P3: MODEL_C 5대 + MODEL_B 2대 투입 -> (OP10 C2+B1=6240, OP20 C3+B1=8640) -> 5,000개 (100% 달성)
-        gt_results = {
-            'P1_OP20_ACHIEVEMENT': 100.0,
-            'P2_OP20_ACHIEVEMENT': 100.0,
-            'P3_OP20_ACHIEVEMENT': 100.0,
-            'AVG_ACHIEVEMENT': 100.0,
-            'TRANSFERS': 12  # 초기 최적 재배치 횟수
-        }
+        # 2. 정답지 (Ground Truth / Optimal) 시뮬레이션
+        print("\n[1단계] 정답지(Optimal Ground Truth) 시뮬레이션 진행 중...")
+        from biz.services.rl.expert import OptimalExpert
+        env_gt = SchedulerEnv(data=data, max_steps=24)
+        gt_expert = OptimalExpert(env_gt)
         
-        print("\n[1단계] 정답지(Optimal Ground Truth) 분석 완료")
-        print(f" - P1 최종공정(OP20) 계획달성률: {gt_results['P1_OP20_ACHIEVEMENT']}% (목표 12,000개)")
-        print(f" - P2 최종공정(OP20) 계획달성률: {gt_results['P2_OP20_ACHIEVEMENT']}% (목표 8,000개)")
-        print(f" - P3 최종공정(OP20) 계획달성률: {gt_results['P3_OP20_ACHIEVEMENT']}% (목표 5,000개)")
-        print(f" - 평균 계획달성률: {gt_results['AVG_ACHIEVEMENT']}% / 예상 장비 전환 횟수: {gt_results['TRANSFERS']}회")
+        obs, _ = env_gt.reset()
+        gt_transfers = 0
+        done = False
+        while not done:
+            action = gt_expert.select_action()
+            obs, reward, terminated, truncated, info = env_gt.step(action)
+            if 'transfers' in info and info['transfers']:
+                gt_transfers += len(info['transfers'])
+            done = terminated or truncated
+            
+        print("\n[정답지 시뮬레이션 최종결과 상세]")
+        env_gt.print_final_summary(method_name="optimal")
+            
+        # 정답지 결과 집계 (최종 공정 OP20 기준)
+        gt_results = {}
+        for p_idx, p_name in enumerate(env_gt.products):
+            if p_name in ['P1', 'P2', 'P3']:
+                s_idx = env_gt.proc_idx.get('OP20')
+                if s_idx is not None:
+                    prod_qty = env_gt.produced[p_idx, s_idx]
+                    plan_qty = env_gt.plan[p_idx, s_idx]
+                    rate = (prod_qty / plan_qty * 100.0) if plan_qty > 0 else 0.0
+                    gt_results[f"{p_name}_OP20_ACHIEVEMENT"] = round(rate, 2)
+                    
+        gt_avg = round(sum(gt_results.values()) / len(gt_results), 2) if gt_results else 0.0
+        gt_results['AVG_ACHIEVEMENT'] = gt_avg
+        gt_results['TRANSFERS'] = gt_transfers
+        
+        print(f" - 정답지 평균 계획달성률: {gt_avg}% / 총 장비 전환 횟수: {gt_transfers}회")
         
         # 3. 일반 휴리스틱 (Heuristic Expert) 시뮬레이션
         print("\n[2단계] 일반 휴리스틱(Heuristic Expert) 시뮬레이션 진행 중 (24 Steps)...")
@@ -477,6 +493,9 @@ class RLSchedulerService:
             if 'transfers' in info and info['transfers']:
                 heu_transfers += len(info['transfers'])
             done = terminated or truncated
+            
+        print("\n[휴리스틱 시뮬레이션 최종결과 상세]")
+        env_heu.print_final_summary(method_name="heuristic")
             
         # 휴리스틱 결과 집계 (최종 공정 OP20 기준)
         heu_results = {}
@@ -519,6 +538,9 @@ class RLSchedulerService:
                 rl_transfers += len(info['transfers'])
             done = terminated or truncated
             
+        print("\n[강화학습 시뮬레이션 최종결과 상세]")
+        env_rl.print_final_summary(method_name="rl")
+            
         # RL 결과 집계 (최종 공정 OP20 기준)
         rl_results = {}
         for p_idx, p_name in enumerate(env_rl.products):
@@ -544,11 +566,11 @@ class RLSchedulerService:
         comparison_df = pd.DataFrame([
             {
                 'Method': '1. 정답지 (Optimal GT)', 
-                'P1 달성률(%)': gt_results['P1_OP20_ACHIEVEMENT'],
-                'P2 달성률(%)': gt_results['P2_OP20_ACHIEVEMENT'],
-                'P3 달성률(%)': gt_results['P3_OP20_ACHIEVEMENT'],
-                '평균 달성률(%)': gt_results['AVG_ACHIEVEMENT'],
-                '장비 전환 횟수': gt_results['TRANSFERS']
+                'P1 달성률(%)': gt_results.get('P1_OP20_ACHIEVEMENT', 0),
+                'P2 달성률(%)': gt_results.get('P2_OP20_ACHIEVEMENT', 0),
+                'P3 달성률(%)': gt_results.get('P3_OP20_ACHIEVEMENT', 0),
+                '평균 달성률(%)': gt_results.get('AVG_ACHIEVEMENT', 0),
+                '장비 전환 횟수': gt_results.get('TRANSFERS', 0)
             },
             {
                 'Method': '2. 일반 휴리스틱 (Expert)', 

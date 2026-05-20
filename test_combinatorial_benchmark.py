@@ -108,5 +108,5 @@ if __name__ == "__main__":
     
     print("\n[2단계] 조합최적화 벤치마크 실행 (정답지 vs 휴리스틱 vs RL)...")
     # 빠른 테스트를 위해 total_timesteps=1000 지정
-    test_service.run_combinatorial_benchmark(total_timesteps=1000)
+    test_service.run_combinatorial_benchmark(total_timesteps=60000)
     print("\n[성공] 모든 벤치마크 테스트가 완료되었습니다.")
