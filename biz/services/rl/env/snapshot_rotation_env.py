@@ -3,12 +3,11 @@ import random
 
 import gymnasium as gym
 
-from biz.services.rl.env.env_schema import build_spaces_from_canonical, compute_canonical_schema
 from biz.services.rl.env.scheduler_env import SchedulerEnv
 
 
 class SnapshotRotationEnv(gym.Env):
-    """from~to 구간 스냅샷 학습 — 전 스냅샷 합집합으로 obs/action 차원 고정."""
+    """from~to 구간 스냅샷 학습 — 10×10 패딩으로 obs/action 차원 고정."""
 
     metadata = {"render_modes": ["human"]}
 
@@ -16,23 +15,14 @@ class SnapshotRotationEnv(gym.Env):
         if not snapshots:
             raise ValueError("학습용 스냅샷이 비어 있습니다.")
         self.snapshots = snapshots
-        self.canonical_products, self.canonical_processes, self.canonical_models = (
-            compute_canonical_schema(snapshots, max_prods=max_prods, max_procs=max_procs)
-        )
-        self.observation_space, self.action_space = build_spaces_from_canonical(
-            self.canonical_products,
-            self.canonical_processes,
-            self.canonical_models,
-        )
+        self.max_prods = max_prods if max_prods is not None else SchedulerEnv.DEFAULT_MAX_PRODS
+        self.max_procs = max_procs if max_procs is not None else SchedulerEnv.DEFAULT_MAX_PROCS
         self._inner = self._make_inner_env(snapshots[0])
+        self.observation_space = self._inner.observation_space
+        self.action_space = self._inner.action_space
 
     def _make_inner_env(self, data):
-        return SchedulerEnv(
-            data=data,
-            fixed_products=self.canonical_products,
-            fixed_processes=self.canonical_processes,
-            fixed_models=self.canonical_models,
-        )
+        return SchedulerEnv(data=data, max_prods=self.max_prods, max_procs=self.max_procs)
 
     def reset(self, seed=None, options=None):
         data = random.choice(self.snapshots)
