@@ -1,7 +1,7 @@
 {
-  "scenario_id": "combinatorial",
+  "scenario_id": "benchmark_dataset",
   "rule_timekey": "20251020070000",
-  "description": "다품종/다모델 조합최적화 벤치마크 — OptimalExpert 기준 정답",
+  "description": "다품종·다모델 스케줄링 벤치마크 데이터셋 — OptimalExpert 기준 정답",
   "evaluation": {
     "last_oper_id": "OP20",
     "products": ["P1", "P2", "P3"],
@@ -14,7 +14,7 @@
     ]
   },
   "optimal_reference": {
-    "note": "evaluate_on_test_data() 실행 시 OptimalExpert로 재산출하여 갱신·비교합니다.",
+    "note": "evaluate_on_benchmark_dataset() 실행 시 OptimalExpert로 재산출하여 비교합니다.",
     "method": "OptimalExpert",
     "P1_OP20_ACHIEVEMENT": null,
     "P2_OP20_ACHIEVEMENT": null,

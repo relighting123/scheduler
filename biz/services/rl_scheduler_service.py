@@ -195,9 +195,9 @@ class RLSchedulerService:
         
         print("[성공] DB 시나리오 초기화가 완료되었습니다 (WIP_INFO 등 7개 테이블).")
 
-    def init_combinatorial_scenario(self):
-        """다품종/다모델/전용모델/UPH 분산 등 조합최적화 문제 시나리오용 DB 초기화"""
-        print("\n[DB 설정] 조합최적화 벤치마크 시나리오 초기화를 시작합니다 (Combinatorial Optimization Scenario)...")
+    def init_benchmark_dataset_scenario(self):
+        """벤치마크 데이터셋(test/data/benchmark_dataset)을 DB에 적재합니다."""
+        print("\n[DB 설정] 벤치마크 데이터셋 시나리오 초기화를 시작합니다...")
         tables = [
             "WIP_INFO", "UPH_INFO", "EQP_QTY_INFO", "AVAIL_INFO", 
             "BATCH_TOOL_INFO", "TOOL_QTY_INFO", "PLAN_INFO", "RTD_CONV_INF"
@@ -214,7 +214,7 @@ class RLSchedulerService:
         self._create_learning_tables()
         tk = self.DEFAULT_RULE_TIMEKEY
         
-        # 3. INSERT Data (Combinatorial Scenario)
+        # 3. INSERT Data (벤치마크 데이터셋)
         # WIP: 충분한 재공 부여
         wips = [
             ('P1', 'OP10', 10, 15000), ('P1', 'OP20', 20, 2000),
@@ -291,7 +291,7 @@ class RLSchedulerService:
         for p, s, st, et, q in plans:
             self.db.execute(f"INSERT INTO PLAN_INFO VALUES ('{tk}', '{p}', '{s}', '{st}', '{et}', {q})")
             
-        print("[성공] 조합최적화 벤치마크용 DB 시나리오 초기화가 완료되었습니다.")
+        print("[성공] 벤치마크 데이터셋 DB 적재가 완료되었습니다.")
 
     def fetch_data(self, rule_timekey=None):
         """DB에서 학습 데이터를 조회합니다. rule_timekey로 스냅샷(기간)을 지정합니다."""
@@ -485,23 +485,23 @@ class RLSchedulerService:
         metrics['TRANSFERS'] = transfers
         return metrics, env
 
-    def evaluate_on_test_data(
+    def evaluate_on_benchmark_dataset(
         self,
-        test_scenario='combinatorial',
+        benchmark_dataset='benchmark_dataset',
         model_path='scheduler_ppo_model',
         max_steps=24,
     ):
-        """test/data 시나리오로 학습 모델·휴리스틱·정답(Optimal) 성능 비교."""
+        """test/data 벤치마크 데이터셋으로 학습 모델·휴리스틱·정답(Optimal) 성능 비교."""
         from biz.services.rl.test_data_loader import TestDataLoader
         from biz.services.rl.expert import HeuristicExpert, OptimalExpert
 
         print("\n" + "=" * 80)
-        print(f" [테스트 데이터 성능 비교 — 시나리오: {test_scenario}]")
+        print(f" [벤치마크 데이터셋 성능 비교 — dataset: {benchmark_dataset}]")
         print("=" * 80)
 
         loader = TestDataLoader()
-        data = loader.load_for_env(test_scenario)
-        ground_truth = loader.load_ground_truth(test_scenario)
+        data = loader.load_for_env(benchmark_dataset)
+        ground_truth = loader.load_ground_truth(benchmark_dataset)
 
         print("\n[1] 정답지(Optimal Ground Truth) 시뮬레이션...")
         gt_metrics, _ = self._run_simulation_with_policy(
@@ -553,7 +553,7 @@ class RLSchedulerService:
         os.makedirs(log_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         report_path = os.path.join(
-            log_dir, f'test_eval_{test_scenario}_{timestamp}.xlsx'
+            log_dir, f'benchmark_dataset_eval_{benchmark_dataset}_{timestamp}.xlsx'
         )
         with pd.ExcelWriter(report_path) as writer:
             comparison_df.to_excel(writer, sheet_name='COMPARISON', index=False)
@@ -566,7 +566,7 @@ class RLSchedulerService:
             rule_timekey=ground_truth.get('rule_timekey', 'test'),
             allocation_df=rl_allocation_df,
             achievement_df=rl_achievement_df,
-            file_prefix=f'test_inference_{test_scenario}',
+            file_prefix=f'benchmark_inference_{benchmark_dataset}',
         )
 
         return comparison_df
@@ -582,9 +582,9 @@ class RLSchedulerService:
         from_rule_timekey=None,
         to_rule_timekey=None,
         run_test_eval=True,
-        test_scenario='combinatorial',
+        benchmark_dataset='benchmark_dataset',
     ):
-        """RULE_TIMEKEY 구간(from~to) 또는 단일 키로 학습 후 테스트 데이터 성능 비교."""
+        """RULE_TIMEKEY 구간(from~to) 또는 단일 키로 학습 후 벤치마크 데이터셋 성능 비교."""
         snapshots = self.fetch_training_snapshots(
             from_rule_timekey=from_rule_timekey,
             to_rule_timekey=to_rule_timekey,
@@ -617,8 +617,10 @@ class RLSchedulerService:
 
         comparison_df = None
         if run_test_eval:
-            print("\n[학습 후] 테스트 데이터 기반 성능 비교를 수행합니다...")
-            comparison_df = self.evaluate_on_test_data(test_scenario=test_scenario)
+            print("\n[학습 후] 벤치마크 데이터셋 기반 성능 비교를 수행합니다...")
+            comparison_df = self.evaluate_on_benchmark_dataset(
+                benchmark_dataset=benchmark_dataset
+            )
         return comparison_df
 
     def _build_final_allocation_df(self, env):
@@ -765,15 +767,14 @@ class RLSchedulerService:
 
         print(f"[성공] 추론 요약 리포트가 엑셀로 저장되었습니다: {file_path}")
 
-    def run_inference(self, rule_timekey=None, output_rule_timekey=None):
+    def run_inference(self, rule_timekey=None):
         """추론 수행.
 
-        - Input 스냅샷: rule_timekey 지정, 미지정 시 WIP_INFO MAX(RULE_TIMEKEY)
-        - Output(RTD_CONV) 키: output_rule_timekey 지정, 미지정 시 현재 시각(YYYYMMDDHHMMSS)
+        - 조회·출력(RTD_CONV 등) RULE_TIMEKEY: rule_timekey 지정, 미지정 시 WIP_INFO MAX(RULE_TIMEKEY)
         """
-        input_timekey = self._resolve_rule_timekey(rule_timekey)
-        print(f"[추론] Input RULE_TIMEKEY={input_timekey} (데이터 스냅샷)")
-        data = self.fetch_data(rule_timekey=input_timekey)
+        resolved_timekey = self._resolve_rule_timekey(rule_timekey)
+        print(f"[추론] RULE_TIMEKEY={resolved_timekey} (입력 스냅샷·결과 출력 공통)")
+        data = self.fetch_data(rule_timekey=resolved_timekey)
         env = SchedulerEnv(data=data)
 
         try:
@@ -786,13 +787,7 @@ class RLSchedulerService:
         done = False
 
         results = []
-        out_tk = self._normalize_timekey_arg(output_rule_timekey)
-        if out_tk:
-            output_tk = out_tk
-        else:
-            output_tk = datetime.now().strftime("%Y%m%d%H%M%S")
-        print(f"[추론] Output RULE_TIMEKEY={output_tk} (RTD_CONV 등 결과 키)")
-        
+
         while not done:
             if model:
                 action, _states = model.predict(obs, deterministic=True)
@@ -807,7 +802,7 @@ class RLSchedulerService:
             if 'transfers' in info:
                 for transfer in info['transfers']:
                     results.append({
-                        'RULE_TIMEKEY': output_tk,
+                        'RULE_TIMEKEY': resolved_timekey,
                         'FROM_PLAN_PROD_KEY': transfer['FROM_PROD'],
                         'FROM_OPER_ID': transfer['FROM_PROC'],
                         'EQP_MODEL_CD': transfer['MODEL'],
@@ -825,7 +820,7 @@ class RLSchedulerService:
 
         allocation_df = self._build_final_allocation_df(env)
         achievement_df = self._build_last_process_achievement_df(env, data)
-        self.save_inference_summary(output_tk, allocation_df, achievement_df)
+        self.save_inference_summary(resolved_timekey, allocation_df, achievement_df)
 
         return results
 
@@ -865,14 +860,14 @@ class RLSchedulerService:
         df.to_excel(file_path, index=False)
         print(f"[성공] 액션 로그가 엑셀로 저장되었습니다: {file_path}")
 
-    def run_combinatorial_benchmark(self, total_timesteps=10000):
-        """정답지(Optimal) vs 일반 휴리스틱 vs RL 모델의 성능 비교 벤치마크 수행"""
+    def run_benchmark_evaluation(self, total_timesteps=10000):
+        """벤치마크 데이터셋 기준 Optimal vs 휴리스틱 vs RL 성능 비교 (학습 포함)."""
         print("\n" + "="*80)
-        print(" [조합최적화 스케줄링 벤치마크 리포트 생성 (Optimal vs Heuristic vs RL)]")
+        print(" [벤치마크 데이터셋 평가 리포트 (Optimal vs Heuristic vs RL)]")
         print("="*80)
         
-        # 1. 시나리오 초기화 및 데이터 로드
-        self.init_combinatorial_scenario()
+        # 1. 벤치마크 데이터셋 DB 적재 및 로드
+        self.init_benchmark_dataset_scenario()
         data = self.fetch_data()
         
         # 2. 정답지 (Ground Truth / Optimal) 시뮬레이션
@@ -1032,16 +1027,16 @@ class RLSchedulerService:
             rule_timekey='benchmark',
             allocation_df=rl_allocation_df,
             achievement_df=rl_last_oper_achievement_df,
-            file_prefix='combinatorial_inference_summary'
+            file_prefix='benchmark_dataset_inference_summary'
         )
         
         # 엑셀 리포트 저장
         log_dir = os.path.join(os.getcwd(), 'logs', 'simulation_logs')
         os.makedirs(log_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_path = os.path.join(log_dir, f'combinatorial_benchmark_{timestamp}.xlsx')
+        file_path = os.path.join(log_dir, f'benchmark_dataset_report_{timestamp}.xlsx')
         comparison_df.to_excel(file_path, index=False)
-        print(f"[성공] 조합최적화 벤치마크 리포트가 엑셀로 저장되었습니다: {file_path}")
+        print(f"[성공] 벤치마크 데이터셋 평가 리포트가 저장되었습니다: {file_path}")
         
         return comparison_df
 

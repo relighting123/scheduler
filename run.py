@@ -7,7 +7,7 @@ def main():
     parser.add_argument(
         "mode",
         choices=["train", "infer", "benchmark"],
-        help="실행 모드: train(학습), infer(추론), benchmark(조합최적화 비교)",
+        help="실행 모드: train(학습), infer(추론), benchmark(벤치마크 데이터셋 평가)",
     )
     parser.add_argument(
         "--from-timekey",
@@ -27,13 +27,7 @@ def main():
         "--timekey",
         type=str,
         default=None,
-        help="단일 RULE_TIMEKEY (학습 단일 스냅샷 또는 추론 Input 스냅샷). 추론 미지정 시 DB MAX",
-    )
-    parser.add_argument(
-        "--output-timekey",
-        type=str,
-        default=None,
-        help="추론 결과(RTD_CONV) Output RULE_TIMEKEY. 미지정 시 현재 시각",
+        help="RULE_TIMEKEY. 학습: 단일 스냅샷 / 추론: 조회·출력 공통 키 (미지정 시 DB MAX)",
     )
     parser.add_argument(
         "--steps",
@@ -49,13 +43,14 @@ def main():
     parser.add_argument(
         "--no-test-eval",
         action="store_true",
-        help="학습 후 테스트 데이터 성능 비교 생략",
+        help="학습 후 벤치마크 데이터셋 성능 비교 생략",
     )
     parser.add_argument(
-        "--test-scenario",
+        "--benchmark-dataset",
         type=str,
-        default="combinatorial",
-        help="학습 후 평가에 사용할 test/data 시나리오명 (기본: combinatorial)",
+        default="benchmark_dataset",
+        dest="benchmark_dataset",
+        help="학습 후 평가에 사용할 test/data 하위 데이터셋 ID (기본: benchmark_dataset)",
     )
 
     args = parser.parse_args()
@@ -83,23 +78,20 @@ def main():
             from_rule_timekey=args.from_timekey,
             to_rule_timekey=args.to_timekey,
             run_test_eval=not args.no_test_eval,
-            test_scenario=args.test_scenario,
+            benchmark_dataset=args.benchmark_dataset,
         )
-        print("학습 및 테스트 평가가 완료되었습니다.")
+        print("학습 및 벤치마크 데이터셋 평가가 완료되었습니다.")
 
     elif args.mode == "infer":
         resolved = args.timekey or "DB MAX(RULE_TIMEKEY)"
-        print(f"[추론 모드] Input RULE_TIMEKEY={resolved}")
-        results = rl_service.run_inference(
-            rule_timekey=args.timekey,
-            output_rule_timekey=args.output_timekey,
-        )
+        print(f"[추론 모드] RULE_TIMEKEY={resolved} (입력·출력 동일)")
+        results = rl_service.run_inference(rule_timekey=args.timekey)
         print(f"추론 완료 (전환 액션 {len(results) if results else 0}건)")
 
     elif args.mode == "benchmark":
-        print(f"[벤치마크 모드] 조합최적화 벤치마크 (Timesteps: {args.steps})")
-        rl_service.run_combinatorial_benchmark(total_timesteps=args.steps)
-        print("벤치마크 완료.")
+        print(f"[벤치마크 모드] 데이터셋 평가 (Timesteps: {args.steps})")
+        rl_service.run_benchmark_evaluation(total_timesteps=args.steps)
+        print("벤치마크 데이터셋 평가 완료.")
 
 if __name__ == "__main__":
     main()

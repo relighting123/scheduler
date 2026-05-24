@@ -33,7 +33,7 @@ app = FastAPI(
 )
 
 class TaskRequest(BaseModel):
-    """rule_timekey: 추론 Input 스냅샷(미지정·N/A 시 DB MAX). 학습 구간은 parameters.from/to_rule_timekey 사용."""
+    """rule_timekey: 추론·출력 공통 키(미지정·N/A 시 DB MAX). 학습 구간은 parameters.from/to_rule_timekey."""
     rule_timekey: str = "N/A"
     action: str
     parameters: dict = {}

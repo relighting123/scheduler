@@ -39,14 +39,14 @@ class TaskProcessor:
                 rule_timekey if rule_timekey not in ("N/A", "") else None
             )
             run_test = params.get("run_test_eval", True)
-            test_scenario = params.get("test_scenario", "combinatorial")
+            benchmark_dataset = params.get("benchmark_dataset", "benchmark_dataset")
             rl_service.train_model(
                 total_timesteps=timesteps,
                 rule_timekey=single_tk,
                 from_rule_timekey=from_tk,
                 to_rule_timekey=to_tk,
                 run_test_eval=run_test,
-                test_scenario=test_scenario,
+                benchmark_dataset=benchmark_dataset,
             )
             return True
         elif action == "rl_inference":
@@ -55,17 +55,13 @@ class TaskProcessor:
             input_tk = params.get("rule_timekey") or (
                 rule_timekey if rule_timekey not in ("N/A", "") else None
             )
-            output_tk = params.get("output_rule_timekey") or params.get("output_timekey")
-            rl_service.run_inference(
-                rule_timekey=input_tk,
-                output_rule_timekey=output_tk,
-            )
+            rl_service.run_inference(rule_timekey=input_tk)
             return True
-        elif action == "combinatorial_benchmark":
-            logger.info("Starting Combinatorial Optimization Benchmark...")
+        elif action in ("benchmark_evaluation", "benchmark"):
+            logger.info("Starting benchmark dataset evaluation...")
             rl_service = RLSchedulerService(db_manager=self.repo)
             timesteps = params.get("total_timesteps", 10000)
-            rl_service.run_combinatorial_benchmark(total_timesteps=timesteps)
+            rl_service.run_benchmark_evaluation(total_timesteps=timesteps)
             return True
         else:
             logger.warning(f"Unknown action: {action}")

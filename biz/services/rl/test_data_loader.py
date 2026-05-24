@@ -46,7 +46,7 @@ class TestDataLoader:
     def scenario_dir(self, scenario: str) -> Path:
         return self.root / scenario
 
-    def load_ground_truth(self, scenario: str = "combinatorial") -> Dict[str, Any]:
+    def load_ground_truth(self, scenario: str = "benchmark_dataset") -> Dict[str, Any]:
         path = self.scenario_dir(scenario) / "ground_truth.json"
         if not path.is_file():
             raise FileNotFoundError(f"정답 파일이 없습니다: {path}")
@@ -55,7 +55,7 @@ class TestDataLoader:
 
     def load_input_tables(
         self,
-        scenario: str = "combinatorial",
+        scenario: str = "benchmark_dataset",
         rule_timekey: Optional[str] = None,
         drop_timekey: bool = True,
     ) -> Dict[str, pd.DataFrame]:
@@ -105,7 +105,7 @@ class TestDataLoader:
 
     def load_for_env(
         self,
-        scenario: str = "combinatorial",
+        scenario: str = "benchmark_dataset",
         rule_timekey: Optional[str] = None,
     ) -> Dict[str, pd.DataFrame]:
         """SchedulerEnv에 바로 넣을 수 있는 형태(RULE_TIMEKEY 제거)로 반환."""

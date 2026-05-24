@@ -29,9 +29,8 @@ def run_rl_inference():
     rl_service.init_db_scenario() 
     
     logger.info("Running RL inference...")
-    # Input: rule_timekey 미지정 시 WIP_INFO MAX(RULE_TIMEKEY)
-    # Output: output_rule_timekey 미지정 시 현재 시각
-    rl_service.run_inference(rule_timekey=None, output_rule_timekey=None)
+    # RULE_TIMEKEY: 미지정 시 WIP_INFO MAX — 조회·결과 출력 동일 키 사용
+    rl_service.run_inference(rule_timekey=None)
     
     logger.info("RL inference completed. Check 'logs/simulation_logs/' for Excel output.")
 
