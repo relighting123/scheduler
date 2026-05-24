@@ -84,7 +84,31 @@ PLAN PROD KEY와 OPER ID별로 배치된 장비들의 UPH를 통해 UPH만큼 �
  batch id가 달라지는 경우는 tool 교체가 일어나며 to batch id의 tool은 소진하고 from batch id의 tool은 반환한다. 또한 1시간동안은 비가용 상태가 되고 1시간 후 to batch id로 가용상태가 된다.
   동일 batch id이나 plan prod key인 경우는 tool 교체를 하지 않아도 되며 시간소요도 없다
 
-[7] 고민사항
+[7] 학습·추론 RULE_TIMEKEY 운영
+
+**학습**
+- `from_rule_timekey` ~ `to_rule_timekey` 구간의 스냅샷을 DB에서 조회하여 학습 (구간에 여러 키가 있으면 에피소드마다 무작위 스냅샷).
+- 단일 스냅샷만 지정할 때는 `rule_timekey` 또는 `from`/`to`에 동일 값 지정.
+- 학습 완료 후 `test/data/benchmark_dataset/` 벤치마크 데이터셋으로 Optimal·휴리스틱·RL 성능 비교 (`evaluate_on_benchmark_dataset`).
+- 벤치마크 데이터셋: 입력 CSV 7종 + `ground_truth.json`(기대 지표).
+
+**추론**
+- `rule_timekey`: 조회 스냅샷·RTD_CONV 등 **결과 출력 키 동일**. 미지정·N/A 시 `MAX(RULE_TIMEKEY)` (WIP_INFO).
+
+**CLI 예시**
+```bash
+python run.py train --from-timekey 20251020070000 --to-timekey 20251020120000 --steps 50000
+python run.py infer --timekey 20251020070000
+python run.py infer   # RULE_TIMEKEY=DB MAX (입력·출력 동일)
+```
+
+**API parameters (rl_train)**
+- `from_rule_timekey`, `to_rule_timekey`, `rule_timekey`, `run_test_eval`, `benchmark_dataset`
+
+**API parameters (rl_inference)**
+- `rule_timekey` (task 또는 parameters) — 조회·출력 공통
+
+[8] 고민사항
 이제 실제로 강화학습 구현해야 하는 데 고민사항이 있어.  장비는 장비모델이 있고 그 속에 장비ID 들이 있어.   그리고 재공이 있는데 각 재공은 PROD ID를 가지고 있어 또한 계획이 있고 이는 계획제품이라는 여러 PROD ID를 묶은 GROUPING된 조건이 있어. 하나의 PROD ID는 하나의 계획제품에만 들어갈 수 있고 하나의 계획제품 안에 여러 PROD ID가 있는 상태이지. 이 계획 제품 단위로 계획량을 관리하고 있어. 그리고 각 PROD ID 기준으로 공정 수순인 FLOW를 가지고 있어. FLOW는 OPER와 SEQ로 구성된 개념이야
 PLAN PROD KEY / OPER /EQP MODEL 별로 시간당 처리량이 있는데 이건 분산이 존재해. 또한 해당 기준으로 처리가능할지 여부가 있으나 이것 역시 실제로는 백프로 보장하지 않아.
 실제로는 EQP_ID/LOT_ID 기준으로 해야 완전 정확한 거지.

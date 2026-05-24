@@ -32,20 +32,36 @@ class TaskProcessor:
         elif action == "rl_train":
             logger.info("Starting RL Training...")
             rl_service = RLSchedulerService(db_manager=self.repo)
-            # 파라미터로 학습 스텝, RULE_TIMEKEY(학습 데이터 스냅샷) 전달 가능
             timesteps = params.get("total_timesteps", 10000)
-            rl_service.train_model(total_timesteps=timesteps, rule_timekey=rule_timekey)
+            from_tk = params.get("from_rule_timekey") or params.get("from_timekey")
+            to_tk = params.get("to_rule_timekey") or params.get("to_timekey")
+            single_tk = params.get("rule_timekey") or (
+                rule_timekey if rule_timekey not in ("N/A", "") else None
+            )
+            run_test = params.get("run_test_eval", True)
+            benchmark_dataset = params.get("benchmark_dataset", "benchmark_dataset")
+            rl_service.train_model(
+                total_timesteps=timesteps,
+                rule_timekey=single_tk,
+                from_rule_timekey=from_tk,
+                to_rule_timekey=to_tk,
+                run_test_eval=run_test,
+                benchmark_dataset=benchmark_dataset,
+            )
             return True
         elif action == "rl_inference":
-            logger.info(f"Starting RL Inference for Rule Timekey: {rule_timekey}...")
+            logger.info("Starting RL Inference...")
             rl_service = RLSchedulerService(db_manager=self.repo)
-            results = rl_service.run_inference(rule_timekey=rule_timekey)
+            input_tk = params.get("rule_timekey") or (
+                rule_timekey if rule_timekey not in ("N/A", "") else None
+            )
+            rl_service.run_inference(rule_timekey=input_tk)
             return True
-        elif action == "combinatorial_benchmark":
-            logger.info("Starting Combinatorial Optimization Benchmark...")
+        elif action in ("benchmark_evaluation", "benchmark"):
+            logger.info("Starting benchmark dataset evaluation...")
             rl_service = RLSchedulerService(db_manager=self.repo)
             timesteps = params.get("total_timesteps", 10000)
-            rl_service.run_combinatorial_benchmark(total_timesteps=timesteps)
+            rl_service.run_benchmark_evaluation(total_timesteps=timesteps)
             return True
         else:
             logger.warning(f"Unknown action: {action}")

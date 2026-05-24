@@ -105,7 +105,7 @@ class OptimalExpert:
         s_idx = env.proc_idx
         m_idx = env.model_idx
         
-        # Combinatorial Scenario Target Allocation:
+        # 벤치마크 데이터셋 목표 배치 (Optimal Ground Truth):
         # P1: MODEL_A 5 units on OP10, 5 units on OP20
         # P2: MODEL_B 3 units on OP10, 3 units on OP20
         # P3: MODEL_C 2 units on OP10, 3 units on OP20

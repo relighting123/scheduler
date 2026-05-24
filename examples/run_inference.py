@@ -29,9 +29,8 @@ def run_rl_inference():
     rl_service.init_db_scenario() 
     
     logger.info("Running RL inference...")
-    # The run_inference method will load the model, run the simulation,
-    # and call print_final_summary which now saves to Excel.
-    rl_service.run_inference()
+    # RULE_TIMEKEY: 미지정 시 WIP_INFO MAX — 조회·결과 출력 동일 키 사용
+    rl_service.run_inference(rule_timekey=None)
     
     logger.info("RL inference completed. Check 'logs/simulation_logs/' for Excel output.")
 

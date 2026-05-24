@@ -4,33 +4,94 @@ from biz.services.rl_scheduler_service import RLSchedulerService
 
 def main():
     parser = argparse.ArgumentParser(description="강화학습 스케줄러 간편 실행기 (CLI)")
-    parser.add_argument("mode", choices=["train", "infer", "benchmark"], help="실행할 모드: 'train' (학습), 'infer' (추론), 또는 'benchmark' (조합최적화 비교)")
-    parser.add_argument("--timekey", type=str, default=None, help="RULE_TIMEKEY (YYYYMMDDHHMMSS). 학습·추론 시 조회할 Input 스냅샷. 추론 Output 키로도 사용 (생략 시 DB 최신 또는 현재 시각)")
-    parser.add_argument("--steps", type=int, default=100000, help="학습 시 진행할 총 타임스텝 (기본: 100000)")
+    parser.add_argument(
+        "mode",
+        choices=["train", "infer", "benchmark"],
+        help="실행 모드: train(학습), infer(추론), benchmark(벤치마크 데이터셋 평가)",
+    )
+    parser.add_argument(
+        "--from-timekey",
+        type=str,
+        default=None,
+        dest="from_timekey",
+        help="학습 데이터 시작 RULE_TIMEKEY (YYYYMMDDHHMMSS). --to-timekey와 함께 구간 지정",
+    )
+    parser.add_argument(
+        "--to-timekey",
+        type=str,
+        default=None,
+        dest="to_timekey",
+        help="학습 데이터 종료 RULE_TIMEKEY. from만 지정 시 단일 스냅샷",
+    )
+    parser.add_argument(
+        "--timekey",
+        type=str,
+        default=None,
+        help="RULE_TIMEKEY. 학습: 단일 스냅샷 / 추론: 조회·출력 공통 키 (미지정 시 DB MAX)",
+    )
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=100000,
+        help="학습·벤치마크 총 타임스텝 (기본: 100000)",
+    )
+    parser.add_argument(
+        "--no-init-db",
+        action="store_true",
+        help="DB 시나리오 초기화(init_db_scenario) 생략",
+    )
+    parser.add_argument(
+        "--no-test-eval",
+        action="store_true",
+        help="학습 후 벤치마크 데이터셋 성능 비교 생략",
+    )
+    parser.add_argument(
+        "--benchmark-dataset",
+        type=str,
+        default="benchmark_dataset",
+        dest="benchmark_dataset",
+        help="학습 후 평가에 사용할 test/data 하위 데이터셋 ID (기본: benchmark_dataset)",
+    )
 
     args = parser.parse_args()
 
-    # DB 레포지토리 초기화 (실제 DB에 붙음)
     repo = BaseRepository()
     rl_service = RLSchedulerService(db_manager=repo)
-    
-    # Heuristic Trap 시나리오용 DB 재생성 및 데이터 삽입
-    rl_service.init_db_scenario()
+
+    if not args.no_init_db and args.mode in ("train", "infer"):
+        rl_service.init_db_scenario()
 
     if args.mode == "train":
-        print(f"[학습 모드] RL 모델 학습을 시작합니다. (Timesteps: {args.steps})")
-        rl_service.train_model(total_timesteps=args.steps, rule_timekey=args.timekey)
-        print("학습이 완료되었습니다.")
-        
+        print(f"[학습 모드] RL 학습 (Timesteps: {args.steps})")
+        if args.from_timekey or args.to_timekey:
+            print(
+                f"  학습 구간: {args.from_timekey or args.to_timekey} "
+                f"~ {args.to_timekey or args.from_timekey}"
+            )
+        elif args.timekey:
+            print(f"  학습 스냅샷: {args.timekey}")
+        else:
+            print("  학습 스냅샷: DB MAX(RULE_TIMEKEY) 또는 기본값")
+        rl_service.train_model(
+            total_timesteps=args.steps,
+            rule_timekey=args.timekey,
+            from_rule_timekey=args.from_timekey,
+            to_rule_timekey=args.to_timekey,
+            run_test_eval=not args.no_test_eval,
+            benchmark_dataset=args.benchmark_dataset,
+        )
+        print("학습 및 벤치마크 데이터셋 평가가 완료되었습니다.")
+
     elif args.mode == "infer":
-        print(f"[추론 모드] RL 모델 추론을 시작합니다. (Timekey: {args.timekey or '자동'})")
+        resolved = args.timekey or "DB MAX(RULE_TIMEKEY)"
+        print(f"[추론 모드] RULE_TIMEKEY={resolved} (입력·출력 동일)")
         results = rl_service.run_inference(rule_timekey=args.timekey)
-        print(f"추론이 완료되었습니다. (결과 {len(results) if results else 0}건 도출)")
+        print(f"추론 완료 (전환 액션 {len(results) if results else 0}건)")
 
     elif args.mode == "benchmark":
-        print(f"[벤치마크 모드] 조합최적화 스케줄링 벤치마크를 시작합니다. (Timesteps: {args.steps})")
-        rl_service.run_combinatorial_benchmark(total_timesteps=args.steps)
-        print("벤치마크가 완료되었습니다.")
+        print(f"[벤치마크 모드] 데이터셋 평가 (Timesteps: {args.steps})")
+        rl_service.run_benchmark_evaluation(total_timesteps=args.steps)
+        print("벤치마크 데이터셋 평가 완료.")
 
 if __name__ == "__main__":
     main()
