@@ -711,10 +711,17 @@ class RLSchedulerService:
         expert_cls=None,
         method_name='simulation',
         model_path='scheduler_ppo_model',
+        target_allocation=None,
     ):
         """단일 데이터 스냅샷으로 24스텝 시뮬레이션 후 지표·전환 횟수 반환."""
         env = self._make_scheduler_env(data, max_steps=max_steps)
-        expert = expert_cls(env) if expert_cls is not None else None
+        if expert_cls is not None:
+            if target_allocation is not None and expert_cls.__name__ == 'OptimalExpert':
+                expert = expert_cls(env, target_allocation=target_allocation)
+            else:
+                expert = expert_cls(env)
+        else:
+            expert = None
         obs, _ = env.reset()
         transfers = 0
         done = False
@@ -753,9 +760,15 @@ class RLSchedulerService:
         data = loader.load_for_env(benchmark_dataset)
         ground_truth = loader.load_ground_truth(benchmark_dataset)
 
+        target_alloc = ground_truth.get('target_allocation')
+
         print("\n[1] 정답지(Optimal Ground Truth) 시뮬레이션...")
         gt_metrics, _ = self._run_simulation_with_policy(
-            data, max_steps=max_steps, expert_cls=OptimalExpert, method_name='optimal_test'
+            data,
+            max_steps=max_steps,
+            expert_cls=OptimalExpert,
+            method_name='optimal_test',
+            target_allocation=target_alloc,
         )
 
         print("\n[2] 휴리스틱(Heuristic Expert) 시뮬레이션...")
