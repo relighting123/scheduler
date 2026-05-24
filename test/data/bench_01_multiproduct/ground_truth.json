@@ -1,5 +1,5 @@
 {
-  "scenario_id": "benchmark_dataset",
+  "scenario_id": "bench_01_multiproduct",
   "rule_timekey": "20251020070000",
   "description": "다품종·다모델 스케줄링 벤치마크 데이터셋 — OptimalExpert 기준 정답",
   "evaluation": {
