@@ -12,9 +12,86 @@ from stable_baselines3.common.monitor import Monitor
 from biz.services.rl.callbacks import PlottingCallback
 from biz.services.rl.env.scheduler_env import SchedulerEnv
 class RLSchedulerService:
+    # 학습(Input) 데이터 스냅샷 식별자 (YYYYMMDDHHMMSS)
+    DEFAULT_RULE_TIMEKEY = '20251020070000'
+
     def __init__(self, db_manager):
         # db_manager는 Core에서 주입받는다고 가정
         self.db = db_manager
+
+    def _resolve_rule_timekey(self, rule_timekey=None):
+        """조회·학습·추론에 사용할 RULE_TIMEKEY 결정 (미지정 시 DB 최신 또는 기본값)."""
+        if rule_timekey and str(rule_timekey) not in ('', 'N/A'):
+            return str(rule_timekey)
+        try:
+            row = self.db.select_one(
+                "SELECT MAX(RULE_TIMEKEY) AS RULE_TIMEKEY FROM WIP_INFO"
+            )
+            if row and row.get('RULE_TIMEKEY'):
+                return str(row['RULE_TIMEKEY'])
+        except Exception:
+            pass
+        return self.DEFAULT_RULE_TIMEKEY
+
+    def _filter_data_by_rule_timekey(self, data, rule_timekey):
+        """각 학습 데이터프레임을 지정 RULE_TIMEKEY 스냅샷으로 필터링."""
+        filtered = {}
+        for key, df in data.items():
+            if df is None or df.empty:
+                filtered[key] = df
+                continue
+            if 'RULE_TIMEKEY' not in df.columns:
+                filtered[key] = df
+                continue
+            snapshot = df[df['RULE_TIMEKEY'] == rule_timekey].copy()
+            filtered[key] = snapshot.drop(columns=['RULE_TIMEKEY'], errors='ignore')
+        return filtered
+
+    def _create_learning_tables(self):
+        """학습(Input) 테이블 7종 생성 (RULE_TIMEKEY 포함)."""
+        self.db.execute("""
+            CREATE TABLE WIP_INFO (
+                RULE_TIMEKEY VARCHAR2(14), PLAN_PROD_KEY VARCHAR2(50),
+                OPER_ID VARCHAR2(50), OPER_SEQ NUMBER, WIP_QTY NUMBER
+            )
+        """)
+        self.db.execute("""
+            CREATE TABLE UPH_INFO (
+                RULE_TIMEKEY VARCHAR2(14), PLAN_PROD_KEY VARCHAR2(50),
+                OPER_ID VARCHAR2(50), EQP_MODEL_CD VARCHAR2(50), UPH NUMBER
+            )
+        """)
+        self.db.execute("""
+            CREATE TABLE EQP_QTY_INFO (
+                RULE_TIMEKEY VARCHAR2(14), BATCH_ID VARCHAR2(50),
+                EQP_MODEL_CD VARCHAR2(50), TIME_SLOT VARCHAR2(50), EQP_QTY NUMBER
+            )
+        """)
+        self.db.execute("""
+            CREATE TABLE AVAIL_INFO (
+                RULE_TIMEKEY VARCHAR2(14), PLAN_PROD_KEY VARCHAR2(50),
+                OPER_ID VARCHAR2(50), EQP_MODEL_CD VARCHAR2(50), AVAIL_YN VARCHAR2(10)
+            )
+        """)
+        self.db.execute("""
+            CREATE TABLE BATCH_TOOL_INFO (
+                RULE_TIMEKEY VARCHAR2(14), BATCH_ID VARCHAR2(50),
+                PLAN_PROD_KEY VARCHAR2(50), OPER_ID VARCHAR2(50)
+            )
+        """)
+        self.db.execute("""
+            CREATE TABLE TOOL_QTY_INFO (
+                RULE_TIMEKEY VARCHAR2(14), BATCH_ID VARCHAR2(50),
+                EQP_MODEL_CD VARCHAR2(50), TOOL_QTY NUMBER
+            )
+        """)
+        self.db.execute("""
+            CREATE TABLE PLAN_INFO (
+                RULE_TIMEKEY VARCHAR2(14), PLAN_PROD_KEY VARCHAR2(50),
+                OPER_ID VARCHAR2(50), START_TIME VARCHAR2(50),
+                END_TIME VARCHAR2(50), PLAN_QTY NUMBER
+            )
+        """)
 
     def init_db_scenario(self):
         """휴리스틱 함정(Trap) 시나리오용 DB 초기화 (DROP -> CREATE -> INSERT)"""
@@ -32,66 +109,33 @@ class RLSchedulerService:
                 pass # 테이블이 없으면 무시
                 
         # 2. CREATE Tables
-        self.db.execute("""
-            CREATE TABLE WIP_INFO (
-                PLAN_PROD_KEY VARCHAR2(50), OPER_ID VARCHAR2(50), OPER_SEQ NUMBER, WIP_QTY NUMBER
-            )
-        """)
-        self.db.execute("""
-            CREATE TABLE UPH_INFO (
-                PLAN_PROD_KEY VARCHAR2(50), OPER_ID VARCHAR2(50), EQP_MODEL_CD VARCHAR2(50), UPH NUMBER
-            )
-        """)
-        self.db.execute("""
-            CREATE TABLE EQP_QTY_INFO (
-                BATCH_ID VARCHAR2(50), EQP_MODEL_CD VARCHAR2(50), TIME_SLOT VARCHAR2(50), EQP_QTY NUMBER
-            )
-        """)
-        self.db.execute("""
-            CREATE TABLE AVAIL_INFO (
-                PLAN_PROD_KEY VARCHAR2(50), OPER_ID VARCHAR2(50), EQP_MODEL_CD VARCHAR2(50), AVAIL_YN VARCHAR2(10)
-            )
-        """)
-        self.db.execute("""
-            CREATE TABLE BATCH_TOOL_INFO (
-                BATCH_ID VARCHAR2(50), PLAN_PROD_KEY VARCHAR2(50), OPER_ID VARCHAR2(50)
-            )
-        """)
-        self.db.execute("""
-            CREATE TABLE TOOL_QTY_INFO (
-                BATCH_ID VARCHAR2(50), EQP_MODEL_CD VARCHAR2(50), TOOL_QTY NUMBER
-            )
-        """)
-        self.db.execute("""
-            CREATE TABLE PLAN_INFO (
-                PLAN_PROD_KEY VARCHAR2(50), OPER_ID VARCHAR2(50), START_TIME VARCHAR2(50), END_TIME VARCHAR2(50), PLAN_QTY NUMBER
-            )
-        """)
+        self._create_learning_tables()
+        tk = self.DEFAULT_RULE_TIMEKEY
         
         # 3. INSERT Data (Trap Scenario)
         # WIP: OP10 = 5000 (Trap trigger), OP20 = 500
-        self.db.execute("INSERT INTO WIP_INFO VALUES ('P1', 'OP10', 10, 5000)")
-        self.db.execute("INSERT INTO WIP_INFO VALUES ('P1', 'OP20', 20, 500)")
+        self.db.execute(f"INSERT INTO WIP_INFO VALUES ('{tk}', 'P1', 'OP10', 10, 5000)")
+        self.db.execute(f"INSERT INTO WIP_INFO VALUES ('{tk}', 'P1', 'OP20', 20, 500)")
         
         # UPH: 100/hr for both operations
-        self.db.execute("INSERT INTO UPH_INFO VALUES ('P1', 'OP10', 'MODEL_A', 100)")
-        self.db.execute("INSERT INTO UPH_INFO VALUES ('P1', 'OP20', 'MODEL_A', 100)")
+        self.db.execute(f"INSERT INTO UPH_INFO VALUES ('{tk}', 'P1', 'OP10', 'MODEL_A', 100)")
+        self.db.execute(f"INSERT INTO UPH_INFO VALUES ('{tk}', 'P1', 'OP20', 'MODEL_A', 100)")
         
         # EQP_QTY (Initial allocation): 5 units perfectly balanced
-        self.db.execute("INSERT INTO EQP_QTY_INFO VALUES ('B1', 'MODEL_A', '2026051800', 5)")
-        self.db.execute("INSERT INTO EQP_QTY_INFO VALUES ('B2', 'MODEL_A', '2026051800', 5)")
+        self.db.execute(f"INSERT INTO EQP_QTY_INFO VALUES ('{tk}', 'B1', 'MODEL_A', '2026051800', 5)")
+        self.db.execute(f"INSERT INTO EQP_QTY_INFO VALUES ('{tk}', 'B2', 'MODEL_A', '2026051800', 5)")
         
         # AVAIL
-        self.db.execute("INSERT INTO AVAIL_INFO VALUES ('P1', 'OP10', 'MODEL_A', 'Y')")
-        self.db.execute("INSERT INTO AVAIL_INFO VALUES ('P1', 'OP20', 'MODEL_A', 'Y')")
+        self.db.execute(f"INSERT INTO AVAIL_INFO VALUES ('{tk}', 'P1', 'OP10', 'MODEL_A', 'Y')")
+        self.db.execute(f"INSERT INTO AVAIL_INFO VALUES ('{tk}', 'P1', 'OP20', 'MODEL_A', 'Y')")
         
         # BATCH
-        self.db.execute("INSERT INTO BATCH_TOOL_INFO VALUES ('B1', 'P1', 'OP10')")
-        self.db.execute("INSERT INTO BATCH_TOOL_INFO VALUES ('B2', 'P1', 'OP20')")
+        self.db.execute(f"INSERT INTO BATCH_TOOL_INFO VALUES ('{tk}', 'B1', 'P1', 'OP10')")
+        self.db.execute(f"INSERT INTO BATCH_TOOL_INFO VALUES ('{tk}', 'B2', 'P1', 'OP20')")
         
         # PLAN
-        self.db.execute("INSERT INTO PLAN_INFO VALUES ('P1', 'OP10', '2026051800', '2026051824', 4000)")
-        self.db.execute("INSERT INTO PLAN_INFO VALUES ('P1', 'OP20', '2026051800', '2026051824', 4000)")
+        self.db.execute(f"INSERT INTO PLAN_INFO VALUES ('{tk}', 'P1', 'OP10', '2026051800', '2026051824', 4000)")
+        self.db.execute(f"INSERT INTO PLAN_INFO VALUES ('{tk}', 'P1', 'OP20', '2026051800', '2026051824', 4000)")
         
         print("[성공] DB 시나리오 초기화가 완료되었습니다 (WIP_INFO 등 7개 테이블).")
 
@@ -111,41 +155,8 @@ class RLSchedulerService:
                 pass # 테이블이 없으면 무시
                 
         # 2. CREATE Tables
-        self.db.execute("""
-            CREATE TABLE WIP_INFO (
-                PLAN_PROD_KEY VARCHAR2(50), OPER_ID VARCHAR2(50), OPER_SEQ NUMBER, WIP_QTY NUMBER
-            )
-        """)
-        self.db.execute("""
-            CREATE TABLE UPH_INFO (
-                PLAN_PROD_KEY VARCHAR2(50), OPER_ID VARCHAR2(50), EQP_MODEL_CD VARCHAR2(50), UPH NUMBER
-            )
-        """)
-        self.db.execute("""
-            CREATE TABLE EQP_QTY_INFO (
-                BATCH_ID VARCHAR2(50), EQP_MODEL_CD VARCHAR2(50), TIME_SLOT VARCHAR2(50), EQP_QTY NUMBER
-            )
-        """)
-        self.db.execute("""
-            CREATE TABLE AVAIL_INFO (
-                PLAN_PROD_KEY VARCHAR2(50), OPER_ID VARCHAR2(50), EQP_MODEL_CD VARCHAR2(50), AVAIL_YN VARCHAR2(10)
-            )
-        """)
-        self.db.execute("""
-            CREATE TABLE BATCH_TOOL_INFO (
-                BATCH_ID VARCHAR2(50), PLAN_PROD_KEY VARCHAR2(50), OPER_ID VARCHAR2(50)
-            )
-        """)
-        self.db.execute("""
-            CREATE TABLE TOOL_QTY_INFO (
-                BATCH_ID VARCHAR2(50), EQP_MODEL_CD VARCHAR2(50), TOOL_QTY NUMBER
-            )
-        """)
-        self.db.execute("""
-            CREATE TABLE PLAN_INFO (
-                PLAN_PROD_KEY VARCHAR2(50), OPER_ID VARCHAR2(50), START_TIME VARCHAR2(50), END_TIME VARCHAR2(50), PLAN_QTY NUMBER
-            )
-        """)
+        self._create_learning_tables()
+        tk = self.DEFAULT_RULE_TIMEKEY
         
         # 3. INSERT Data (Combinatorial Scenario)
         # WIP: 충분한 재공 부여
@@ -155,7 +166,7 @@ class RLSchedulerService:
             ('P3', 'OP10', 10, 6000),  ('P3', 'OP20', 20, 500)
         ]
         for p, s, seq, q in wips:
-            self.db.execute(f"INSERT INTO WIP_INFO VALUES ('{p}', '{s}', {seq}, {q})")
+            self.db.execute(f"INSERT INTO WIP_INFO VALUES ('{tk}', '{p}', '{s}', {seq}, {q})")
             
         # UPH: UPH 분산 및 전용모델 특성 반영
         # MODEL_A: P1에 고효율(100), P2에 보통(80), P3 불가(0)
@@ -170,7 +181,7 @@ class RLSchedulerService:
             ('P3', 'OP10', 'MODEL_C', 100), ('P3', 'OP20', 'MODEL_C', 100)
         ]
         for p, s, m, u in uphs:
-            self.db.execute(f"INSERT INTO UPH_INFO VALUES ('{p}', '{s}', '{m}', {u})")
+            self.db.execute(f"INSERT INTO UPH_INFO VALUES ('{tk}', '{p}', '{s}', '{m}', {u})")
             
         # AVAIL
         avails = [
@@ -187,7 +198,7 @@ class RLSchedulerService:
             ('P3', 'OP10', 'MODEL_C', 'Y'), ('P3', 'OP20', 'MODEL_C', 'Y')
         ]
         for p, s, m, a in avails:
-            self.db.execute(f"INSERT INTO AVAIL_INFO VALUES ('{p}', '{s}', '{m}', '{a}')")
+            self.db.execute(f"INSERT INTO AVAIL_INFO VALUES ('{tk}', '{p}', '{s}', '{m}', '{a}')")
             
         # BATCH
         batches = [
@@ -196,12 +207,12 @@ class RLSchedulerService:
             ('B5', 'P3', 'OP10'), ('B6', 'P3', 'OP20')
         ]
         for b, p, s in batches:
-            self.db.execute(f"INSERT INTO BATCH_TOOL_INFO VALUES ('{b}', '{p}', '{s}')")
+            self.db.execute(f"INSERT INTO BATCH_TOOL_INFO VALUES ('{tk}', '{b}', '{p}', '{s}')")
             
         # TOOL QTY
         for b in ['B1', 'B2', 'B3', 'B4', 'B5', 'B6']:
             for m in ['MODEL_A', 'MODEL_B', 'MODEL_C']:
-                self.db.execute(f"INSERT INTO TOOL_QTY_INFO VALUES ('{b}', '{m}', 20)")
+                self.db.execute(f"INSERT INTO TOOL_QTY_INFO VALUES ('{tk}', '{b}', '{m}', 20)")
                 
         # EQP QTY (초기 비효율적 할당 - 병목 유발)
         # MODEL_A (10대): B1(P1-OP10) 5대, B3(P2-OP10) 5대. (OP20 0대)
@@ -213,7 +224,7 @@ class RLSchedulerService:
             ('B6', 'MODEL_C', '2026051800', 5)
         ]
         for b, m, t, q in eqps:
-            self.db.execute(f"INSERT INTO EQP_QTY_INFO VALUES ('{b}', '{m}', '{t}', {q})")
+            self.db.execute(f"INSERT INTO EQP_QTY_INFO VALUES ('{tk}', '{b}', '{m}', '{t}', {q})")
             
         # PLAN (24시간 기준 목표)
         plans = [
@@ -222,53 +233,97 @@ class RLSchedulerService:
             ('P3', 'OP10', '2026051800', '2026051824', 5000),  ('P3', 'OP20', '2026051800', '2026051824', 5000)
         ]
         for p, s, st, et, q in plans:
-            self.db.execute(f"INSERT INTO PLAN_INFO VALUES ('{p}', '{s}', '{st}', '{et}', {q})")
+            self.db.execute(f"INSERT INTO PLAN_INFO VALUES ('{tk}', '{p}', '{s}', '{st}', '{et}', {q})")
             
         print("[성공] 조합최적화 벤치마크용 DB 시나리오 초기화가 완료되었습니다.")
 
-    def fetch_data(self):
-        """DB에서 데이터를 조회해 옵니다."""
+    def fetch_data(self, rule_timekey=None):
+        """DB에서 학습 데이터를 조회합니다. rule_timekey로 스냅샷(기간)을 지정합니다."""
+        resolved_tk = self._resolve_rule_timekey(rule_timekey)
         try:
-            wip_data = pd.DataFrame(self.db.select_list("SELECT PLAN_PROD_KEY, OPER_ID, OPER_SEQ, WIP_QTY FROM WIP_INFO"), columns=['PLAN_PROD_KEY', 'OPER_ID', 'OPER_SEQ', 'WIP_QTY'])
-            uph_data = pd.DataFrame(self.db.select_list("SELECT PLAN_PROD_KEY, OPER_ID, EQP_MODEL_CD, UPH FROM UPH_INFO"), columns=['PLAN_PROD_KEY', 'OPER_ID', 'EQP_MODEL_CD', 'UPH'])
-            eqp_qty_data = pd.DataFrame(self.db.select_list("SELECT BATCH_ID, EQP_MODEL_CD, TIME_SLOT, EQP_QTY FROM EQP_QTY_INFO"), columns=['BATCH_ID', 'EQP_MODEL_CD', 'TIME_SLOT', 'EQP_QTY'])
-            avail_data = pd.DataFrame(self.db.select_list("SELECT PLAN_PROD_KEY, OPER_ID, EQP_MODEL_CD, AVAIL_YN FROM AVAIL_INFO"), columns=['PLAN_PROD_KEY', 'OPER_ID', 'EQP_MODEL_CD', 'AVAIL_YN'])
-            batch_tool_data = pd.DataFrame(self.db.select_list("SELECT BATCH_ID, PLAN_PROD_KEY, OPER_ID FROM BATCH_TOOL_INFO"), columns=['BATCH_ID', 'PLAN_PROD_KEY', 'OPER_ID'])
-            tool_qty_data = pd.DataFrame(self.db.select_list("SELECT BATCH_ID, EQP_MODEL_CD, TOOL_QTY FROM TOOL_QTY_INFO"), columns=['BATCH_ID', 'EQP_MODEL_CD', 'TOOL_QTY'])
-            plan_data = pd.DataFrame(self.db.select_list("SELECT PLAN_PROD_KEY, OPER_ID, START_TIME, END_TIME, PLAN_QTY FROM PLAN_INFO"), columns=['PLAN_PROD_KEY', 'OPER_ID', 'START_TIME', 'END_TIME', 'PLAN_QTY'])
-            
-            # DB가 비어있을 경우 에러 방지를 위해 기본 컬럼 지정
-            if wip_data.empty: wip_data = pd.DataFrame(columns=['PLAN_PROD_KEY', 'OPER_ID', 'OPER_SEQ', 'WIP_QTY'])
-            if uph_data.empty: uph_data = pd.DataFrame(columns=['PLAN_PROD_KEY', 'OPER_ID', 'EQP_MODEL_CD', 'UPH'])
-            if eqp_qty_data.empty: eqp_qty_data = pd.DataFrame(columns=['BATCH_ID', 'EQP_MODEL_CD', 'TIME_SLOT', 'EQP_QTY'])
-            if avail_data.empty: avail_data = pd.DataFrame(columns=['PLAN_PROD_KEY', 'OPER_ID', 'EQP_MODEL_CD', 'AVAIL_YN'])
-            if batch_tool_data.empty: batch_tool_data = pd.DataFrame(columns=['BATCH_ID', 'PLAN_PROD_KEY', 'OPER_ID'])
-            if tool_qty_data.empty: tool_qty_data = pd.DataFrame(columns=['BATCH_ID', 'EQP_MODEL_CD', 'TOOL_QTY'])
-            if plan_data.empty: plan_data = pd.DataFrame(columns=['PLAN_PROD_KEY', 'OPER_ID', 'START_TIME', 'END_TIME', 'PLAN_QTY'])
-            
-            print("[성공] DB에서 성공적으로 스케줄링 기초 데이터를 조회했습니다.")
-            
+            wip_data = pd.DataFrame(
+                self.db.select_list(
+                    "SELECT RULE_TIMEKEY, PLAN_PROD_KEY, OPER_ID, OPER_SEQ, WIP_QTY FROM WIP_INFO"
+                ),
+                columns=['RULE_TIMEKEY', 'PLAN_PROD_KEY', 'OPER_ID', 'OPER_SEQ', 'WIP_QTY'],
+            )
+            uph_data = pd.DataFrame(
+                self.db.select_list(
+                    "SELECT RULE_TIMEKEY, PLAN_PROD_KEY, OPER_ID, EQP_MODEL_CD, UPH FROM UPH_INFO"
+                ),
+                columns=['RULE_TIMEKEY', 'PLAN_PROD_KEY', 'OPER_ID', 'EQP_MODEL_CD', 'UPH'],
+            )
+            eqp_qty_data = pd.DataFrame(
+                self.db.select_list(
+                    "SELECT RULE_TIMEKEY, BATCH_ID, EQP_MODEL_CD, TIME_SLOT, EQP_QTY FROM EQP_QTY_INFO"
+                ),
+                columns=['RULE_TIMEKEY', 'BATCH_ID', 'EQP_MODEL_CD', 'TIME_SLOT', 'EQP_QTY'],
+            )
+            avail_data = pd.DataFrame(
+                self.db.select_list(
+                    "SELECT RULE_TIMEKEY, PLAN_PROD_KEY, OPER_ID, EQP_MODEL_CD, AVAIL_YN FROM AVAIL_INFO"
+                ),
+                columns=['RULE_TIMEKEY', 'PLAN_PROD_KEY', 'OPER_ID', 'EQP_MODEL_CD', 'AVAIL_YN'],
+            )
+            batch_tool_data = pd.DataFrame(
+                self.db.select_list(
+                    "SELECT RULE_TIMEKEY, BATCH_ID, PLAN_PROD_KEY, OPER_ID FROM BATCH_TOOL_INFO"
+                ),
+                columns=['RULE_TIMEKEY', 'BATCH_ID', 'PLAN_PROD_KEY', 'OPER_ID'],
+            )
+            tool_qty_data = pd.DataFrame(
+                self.db.select_list(
+                    "SELECT RULE_TIMEKEY, BATCH_ID, EQP_MODEL_CD, TOOL_QTY FROM TOOL_QTY_INFO"
+                ),
+                columns=['RULE_TIMEKEY', 'BATCH_ID', 'EQP_MODEL_CD', 'TOOL_QTY'],
+            )
+            plan_data = pd.DataFrame(
+                self.db.select_list(
+                    "SELECT RULE_TIMEKEY, PLAN_PROD_KEY, OPER_ID, START_TIME, END_TIME, PLAN_QTY FROM PLAN_INFO"
+                ),
+                columns=['RULE_TIMEKEY', 'PLAN_PROD_KEY', 'OPER_ID', 'START_TIME', 'END_TIME', 'PLAN_QTY'],
+            )
+
+            if wip_data.empty:
+                wip_data = pd.DataFrame(columns=['RULE_TIMEKEY', 'PLAN_PROD_KEY', 'OPER_ID', 'OPER_SEQ', 'WIP_QTY'])
+            if uph_data.empty:
+                uph_data = pd.DataFrame(columns=['RULE_TIMEKEY', 'PLAN_PROD_KEY', 'OPER_ID', 'EQP_MODEL_CD', 'UPH'])
+            if eqp_qty_data.empty:
+                eqp_qty_data = pd.DataFrame(columns=['RULE_TIMEKEY', 'BATCH_ID', 'EQP_MODEL_CD', 'TIME_SLOT', 'EQP_QTY'])
+            if avail_data.empty:
+                avail_data = pd.DataFrame(columns=['RULE_TIMEKEY', 'PLAN_PROD_KEY', 'OPER_ID', 'EQP_MODEL_CD', 'AVAIL_YN'])
+            if batch_tool_data.empty:
+                batch_tool_data = pd.DataFrame(columns=['RULE_TIMEKEY', 'BATCH_ID', 'PLAN_PROD_KEY', 'OPER_ID'])
+            if tool_qty_data.empty:
+                tool_qty_data = pd.DataFrame(columns=['RULE_TIMEKEY', 'BATCH_ID', 'EQP_MODEL_CD', 'TOOL_QTY'])
+            if plan_data.empty:
+                plan_data = pd.DataFrame(columns=['RULE_TIMEKEY', 'PLAN_PROD_KEY', 'OPER_ID', 'START_TIME', 'END_TIME', 'PLAN_QTY'])
+
+            raw = {
+                'wip_info': wip_data,
+                'uph_info': uph_data,
+                'eqp_qty_info': eqp_qty_data,
+                'avail_info': avail_data,
+                'batch_tool_info': batch_tool_data,
+                'tool_qty_info': tool_qty_data,
+                'plan_info': plan_data,
+            }
+            data = self._filter_data_by_rule_timekey(raw, resolved_tk)
+            print(f"[성공] DB에서 RULE_TIMEKEY={resolved_tk} 스냅샷 데이터를 조회했습니다.")
+            return data
+
         except Exception as e:
             print(f"[경고] DB 연동 실패 (또는 테이블 없음): {e}")
             print("데이터를 조회할 수 없습니다. DB 초기화(init_db_scenario)가 올바르게 수행되었는지 확인하세요.")
-            # 실패 시 빈 DataFrame 반환
-            wip_data = pd.DataFrame(columns=['PLAN_PROD_KEY', 'OPER_ID', 'OPER_SEQ', 'WIP_QTY'])
-            uph_data = pd.DataFrame(columns=['PLAN_PROD_KEY', 'OPER_ID', 'EQP_MODEL_CD', 'UPH'])
-            eqp_qty_data = pd.DataFrame(columns=['BATCH_ID', 'EQP_MODEL_CD', 'TIME_SLOT', 'EQP_QTY'])
-            avail_data = pd.DataFrame(columns=['PLAN_PROD_KEY', 'OPER_ID', 'EQP_MODEL_CD', 'AVAIL_YN'])
-            batch_tool_data = pd.DataFrame(columns=['BATCH_ID', 'PLAN_PROD_KEY', 'OPER_ID'])
-            tool_qty_data = pd.DataFrame(columns=['BATCH_ID', 'EQP_MODEL_CD', 'TOOL_QTY'])
-            plan_data = pd.DataFrame(columns=['PLAN_PROD_KEY', 'OPER_ID', 'START_TIME', 'END_TIME', 'PLAN_QTY'])
-
-        return {
-            'wip_info': wip_data,
-            'uph_info': uph_data,
-            'eqp_qty_info': eqp_qty_data,
-            'avail_info': avail_data,
-            'batch_tool_info': batch_tool_data,
-            'tool_qty_info': tool_qty_data,
-            'plan_info': plan_data
-        }
+            return self._filter_data_by_rule_timekey({
+                'wip_info': pd.DataFrame(columns=['RULE_TIMEKEY', 'PLAN_PROD_KEY', 'OPER_ID', 'OPER_SEQ', 'WIP_QTY']),
+                'uph_info': pd.DataFrame(columns=['RULE_TIMEKEY', 'PLAN_PROD_KEY', 'OPER_ID', 'EQP_MODEL_CD', 'UPH']),
+                'eqp_qty_info': pd.DataFrame(columns=['RULE_TIMEKEY', 'BATCH_ID', 'EQP_MODEL_CD', 'TIME_SLOT', 'EQP_QTY']),
+                'avail_info': pd.DataFrame(columns=['RULE_TIMEKEY', 'PLAN_PROD_KEY', 'OPER_ID', 'EQP_MODEL_CD', 'AVAIL_YN']),
+                'batch_tool_info': pd.DataFrame(columns=['RULE_TIMEKEY', 'BATCH_ID', 'PLAN_PROD_KEY', 'OPER_ID']),
+                'tool_qty_info': pd.DataFrame(columns=['RULE_TIMEKEY', 'BATCH_ID', 'EQP_MODEL_CD', 'TOOL_QTY']),
+                'plan_info': pd.DataFrame(columns=['RULE_TIMEKEY', 'PLAN_PROD_KEY', 'OPER_ID', 'START_TIME', 'END_TIME', 'PLAN_QTY']),
+            }, resolved_tk)
 
     def generate_expert_data(self, env, num_samples=1000):
         """휴리스틱 룰(UPH 기반 최적화)을 적용한 전문가 데이터 생성"""
@@ -323,8 +378,8 @@ class RLSchedulerService:
             print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(dataloader):.4f}")
         print("모방학습 완료.")
 
-    def train_model(self, total_timesteps=10000, pretrain_bc=True, n_envs=4, batch_size=64, n_steps=2048):
-        data = self.fetch_data()
+    def train_model(self, total_timesteps=10000, pretrain_bc=True, n_envs=4, batch_size=64, n_steps=2048, rule_timekey=None):
+        data = self.fetch_data(rule_timekey=rule_timekey)
         
         def make_env():
             return Monitor(SchedulerEnv(data=data))
@@ -493,21 +548,25 @@ class RLSchedulerService:
 
     def run_inference(self, rule_timekey=None):
         """추론을 수행하고 결과를 DB에 저장합니다."""
-        data = self.fetch_data()
+        input_timekey = self._resolve_rule_timekey(rule_timekey)
+        data = self.fetch_data(rule_timekey=input_timekey)
         env = SchedulerEnv(data=data)
-        
+
         try:
             model = PPO.load("scheduler_ppo_model")
-        except:
+        except Exception:
             print("저장된 모델이 없습니다. 임의의 액션으로 시뮬레이션 합니다.")
             model = None
-            
+
         obs, _ = env.reset()
         done = False
-        
+
         results = []
+        # 출력(RTD_CONV)용 RULE_TIMEKEY: 미지정 시 현재 시각 14자리
         if not rule_timekey or rule_timekey == 'N/A':
-            rule_timekey = datetime.now().strftime("%Y%m%d%H%M%S%f")[:16] # 16자리 맞춤
+            rule_timekey = datetime.now().strftime("%Y%m%d%H%M%S")
+        else:
+            rule_timekey = str(rule_timekey)
         
         while not done:
             if model:
@@ -761,103 +820,3 @@ class RLSchedulerService:
         
         return comparison_df
 
-
-
-    def init_combinatorial_scenario(self):
-        # DB 연결이 없으므로 PASS (fetch_data에서 더미 데이터 반환)
-        print("\n[DB 설정] 모의(Mock) 조합최적화 벤치마크 시나리오 초기화 (DB 연결 없음)")
-
-    def fetch_data(self):
-        # 1. 제품별 공정 수순 및 재공 정보 (WIP_INFO)
-        wip_data = pd.DataFrame([
-            {'PLAN_PROD_KEY': 'P1', 'OPER_ID': 'OP10', 'OPER_SEQ': 10, 'WIP_QTY': 15000},
-            {'PLAN_PROD_KEY': 'P1', 'OPER_ID': 'OP20', 'OPER_SEQ': 20, 'WIP_QTY': 2000},
-            {'PLAN_PROD_KEY': 'P2', 'OPER_ID': 'OP10', 'OPER_SEQ': 10, 'WIP_QTY': 10000},
-            {'PLAN_PROD_KEY': 'P2', 'OPER_ID': 'OP20', 'OPER_SEQ': 20, 'WIP_QTY': 1000},
-            {'PLAN_PROD_KEY': 'P3', 'OPER_ID': 'OP10', 'OPER_SEQ': 10, 'WIP_QTY': 6000},
-            {'PLAN_PROD_KEY': 'P3', 'OPER_ID': 'OP20', 'OPER_SEQ': 20, 'WIP_QTY': 500}
-        ])
-        
-        # 2. 장비 모델별 시간당 생산량 (UPH_INFO) - UPH 분산 및 전용모델 특성 반영
-        uph_data = pd.DataFrame([
-            {'PLAN_PROD_KEY': 'P1', 'OPER_ID': 'OP10', 'EQP_MODEL_CD': 'MODEL_A', 'UPH': 100},
-            {'PLAN_PROD_KEY': 'P1', 'OPER_ID': 'OP20', 'EQP_MODEL_CD': 'MODEL_A', 'UPH': 100},
-            {'PLAN_PROD_KEY': 'P1', 'OPER_ID': 'OP10', 'EQP_MODEL_CD': 'MODEL_B', 'UPH': 70},
-            {'PLAN_PROD_KEY': 'P1', 'OPER_ID': 'OP20', 'EQP_MODEL_CD': 'MODEL_B', 'UPH': 70},
-            {'PLAN_PROD_KEY': 'P2', 'OPER_ID': 'OP10', 'EQP_MODEL_CD': 'MODEL_A', 'UPH': 80},
-            {'PLAN_PROD_KEY': 'P2', 'OPER_ID': 'OP20', 'EQP_MODEL_CD': 'MODEL_A', 'UPH': 80},
-            {'PLAN_PROD_KEY': 'P2', 'OPER_ID': 'OP10', 'EQP_MODEL_CD': 'MODEL_B', 'UPH': 120},
-            {'PLAN_PROD_KEY': 'P2', 'OPER_ID': 'OP20', 'EQP_MODEL_CD': 'MODEL_B', 'UPH': 120},
-            {'PLAN_PROD_KEY': 'P3', 'OPER_ID': 'OP10', 'EQP_MODEL_CD': 'MODEL_B', 'UPH': 60},
-            {'PLAN_PROD_KEY': 'P3', 'OPER_ID': 'OP20', 'EQP_MODEL_CD': 'MODEL_B', 'UPH': 60},
-            {'PLAN_PROD_KEY': 'P3', 'OPER_ID': 'OP10', 'EQP_MODEL_CD': 'MODEL_C', 'UPH': 100},
-            {'PLAN_PROD_KEY': 'P3', 'OPER_ID': 'OP20', 'EQP_MODEL_CD': 'MODEL_C', 'UPH': 100}
-        ])
-        
-        # 3. 장비 댓수 정보 (EQP_QTY_INFO) - 초기 비효율적 할당 (병목 유발)
-        eqp_qty_data = pd.DataFrame([
-            {'BATCH_ID': 'B1', 'EQP_MODEL_CD': 'MODEL_A', 'TIME_SLOT': '2026051800', 'EQP_QTY': 5},
-            {'BATCH_ID': 'B3', 'EQP_MODEL_CD': 'MODEL_A', 'TIME_SLOT': '2026051800', 'EQP_QTY': 5},
-            {'BATCH_ID': 'B2', 'EQP_MODEL_CD': 'MODEL_B', 'TIME_SLOT': '2026051800', 'EQP_QTY': 4},
-            {'BATCH_ID': 'B5', 'EQP_MODEL_CD': 'MODEL_B', 'TIME_SLOT': '2026051800', 'EQP_QTY': 4},
-            {'BATCH_ID': 'B6', 'EQP_MODEL_CD': 'MODEL_C', 'TIME_SLOT': '2026051800', 'EQP_QTY': 5}
-        ])
-        
-        # 4. 처리가능여부 (AVAIL_INFO)
-        avail_data = pd.DataFrame([
-            {'PLAN_PROD_KEY': 'P1', 'OPER_ID': 'OP10', 'EQP_MODEL_CD': 'MODEL_A', 'AVAIL_YN': 'Y'},
-            {'PLAN_PROD_KEY': 'P1', 'OPER_ID': 'OP20', 'EQP_MODEL_CD': 'MODEL_A', 'AVAIL_YN': 'Y'},
-            {'PLAN_PROD_KEY': 'P1', 'OPER_ID': 'OP10', 'EQP_MODEL_CD': 'MODEL_B', 'AVAIL_YN': 'Y'},
-            {'PLAN_PROD_KEY': 'P1', 'OPER_ID': 'OP20', 'EQP_MODEL_CD': 'MODEL_B', 'AVAIL_YN': 'Y'},
-            {'PLAN_PROD_KEY': 'P1', 'OPER_ID': 'OP10', 'EQP_MODEL_CD': 'MODEL_C', 'AVAIL_YN': 'N'},
-            {'PLAN_PROD_KEY': 'P1', 'OPER_ID': 'OP20', 'EQP_MODEL_CD': 'MODEL_C', 'AVAIL_YN': 'N'},
-            {'PLAN_PROD_KEY': 'P2', 'OPER_ID': 'OP10', 'EQP_MODEL_CD': 'MODEL_A', 'AVAIL_YN': 'Y'},
-            {'PLAN_PROD_KEY': 'P2', 'OPER_ID': 'OP20', 'EQP_MODEL_CD': 'MODEL_A', 'AVAIL_YN': 'Y'},
-            {'PLAN_PROD_KEY': 'P2', 'OPER_ID': 'OP10', 'EQP_MODEL_CD': 'MODEL_B', 'AVAIL_YN': 'Y'},
-            {'PLAN_PROD_KEY': 'P2', 'OPER_ID': 'OP20', 'EQP_MODEL_CD': 'MODEL_B', 'AVAIL_YN': 'Y'},
-            {'PLAN_PROD_KEY': 'P2', 'OPER_ID': 'OP10', 'EQP_MODEL_CD': 'MODEL_C', 'AVAIL_YN': 'N'},
-            {'PLAN_PROD_KEY': 'P2', 'OPER_ID': 'OP20', 'EQP_MODEL_CD': 'MODEL_C', 'AVAIL_YN': 'N'},
-            {'PLAN_PROD_KEY': 'P3', 'OPER_ID': 'OP10', 'EQP_MODEL_CD': 'MODEL_A', 'AVAIL_YN': 'N'},
-            {'PLAN_PROD_KEY': 'P3', 'OPER_ID': 'OP20', 'EQP_MODEL_CD': 'MODEL_A', 'AVAIL_YN': 'N'},
-            {'PLAN_PROD_KEY': 'P3', 'OPER_ID': 'OP10', 'EQP_MODEL_CD': 'MODEL_B', 'AVAIL_YN': 'Y'},
-            {'PLAN_PROD_KEY': 'P3', 'OPER_ID': 'OP20', 'EQP_MODEL_CD': 'MODEL_B', 'AVAIL_YN': 'Y'},
-            {'PLAN_PROD_KEY': 'P3', 'OPER_ID': 'OP10', 'EQP_MODEL_CD': 'MODEL_C', 'AVAIL_YN': 'Y'},
-            {'PLAN_PROD_KEY': 'P3', 'OPER_ID': 'OP20', 'EQP_MODEL_CD': 'MODEL_C', 'AVAIL_YN': 'Y'}
-        ])
-        
-        # 5. Tool 교체 단위 정보 (BATCH_TOOL_INFO)
-        batch_tool_data = pd.DataFrame([
-            {'BATCH_ID': 'B1', 'PLAN_PROD_KEY': 'P1', 'OPER_ID': 'OP10'},
-            {'BATCH_ID': 'B2', 'PLAN_PROD_KEY': 'P1', 'OPER_ID': 'OP20'},
-            {'BATCH_ID': 'B3', 'PLAN_PROD_KEY': 'P2', 'OPER_ID': 'OP10'},
-            {'BATCH_ID': 'B4', 'PLAN_PROD_KEY': 'P2', 'OPER_ID': 'OP20'},
-            {'BATCH_ID': 'B5', 'PLAN_PROD_KEY': 'P3', 'OPER_ID': 'OP10'},
-            {'BATCH_ID': 'B6', 'PLAN_PROD_KEY': 'P3', 'OPER_ID': 'OP20'}
-        ])
-        
-        # 6. Tool 갯수 정보 (TOOL_QTY_INFO)
-        tool_qty_data = pd.DataFrame([
-            {'BATCH_ID': b, 'EQP_MODEL_CD': m, 'TOOL_QTY': 20}
-            for b in ['B1', 'B2', 'B3', 'B4', 'B5', 'B6']
-            for m in ['MODEL_A', 'MODEL_B', 'MODEL_C']
-        ])
-        
-        # 7. 계획 정보 (PLAN_INFO) - 24시간 기준 목표
-        plan_data = pd.DataFrame([
-            {'PLAN_PROD_KEY': 'P1', 'OPER_ID': 'OP10', 'START_TIME': '2026051800', 'END_TIME': '2026051824', 'PLAN_QTY': 12000},
-            {'PLAN_PROD_KEY': 'P1', 'OPER_ID': 'OP20', 'START_TIME': '2026051800', 'END_TIME': '2026051824', 'PLAN_QTY': 12000},
-            {'PLAN_PROD_KEY': 'P2', 'OPER_ID': 'OP10', 'START_TIME': '2026051800', 'END_TIME': '2026051824', 'PLAN_QTY': 8000},
-            {'PLAN_PROD_KEY': 'P2', 'OPER_ID': 'OP20', 'START_TIME': '2026051800', 'END_TIME': '2026051824', 'PLAN_QTY': 8000},
-            {'PLAN_PROD_KEY': 'P3', 'OPER_ID': 'OP10', 'START_TIME': '2026051800', 'END_TIME': '2026051824', 'PLAN_QTY': 5000},
-            {'PLAN_PROD_KEY': 'P3', 'OPER_ID': 'OP20', 'START_TIME': '2026051800', 'END_TIME': '2026051824', 'PLAN_QTY': 5000}
-        ])
-        
-        return {
-            'wip_info': wip_data,
-            'uph_info': uph_data,
-            'eqp_qty_info': eqp_qty_data,
-            'avail_info': avail_data,
-            'batch_tool_info': batch_tool_data,
-            'tool_qty_info': tool_qty_data,
-            'plan_info': plan_data
-        }

@@ -32,9 +32,9 @@ class TaskProcessor:
         elif action == "rl_train":
             logger.info("Starting RL Training...")
             rl_service = RLSchedulerService(db_manager=self.repo)
-            # 파라미터로 학습 스텝 등 전달 가능
+            # 파라미터로 학습 스텝, RULE_TIMEKEY(학습 데이터 스냅샷) 전달 가능
             timesteps = params.get("total_timesteps", 10000)
-            rl_service.train_model(total_timesteps=timesteps)
+            rl_service.train_model(total_timesteps=timesteps, rule_timekey=rule_timekey)
             return True
         elif action == "rl_inference":
             logger.info(f"Starting RL Inference for Rule Timekey: {rule_timekey}...")

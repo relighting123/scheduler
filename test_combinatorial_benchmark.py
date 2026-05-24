@@ -1,12 +1,15 @@
 import pandas as pd
 from biz.services.rl_scheduler_service import RLSchedulerService
 
+TK = RLSchedulerService.DEFAULT_RULE_TIMEKEY
+
 class TestCombinatorialBenchmarkService(RLSchedulerService):
     def init_combinatorial_scenario(self):
         # DB 연결이 없으므로 PASS (fetch_data에서 더미 데이터 반환)
         print("\n[DB 설정] 모의(Mock) 조합최적화 벤치마크 시나리오 초기화 (DB 연결 없음)")
 
-    def fetch_data(self):
+    def fetch_data(self, rule_timekey=None):
+        resolved_tk = self._resolve_rule_timekey(rule_timekey)
         # 1. 제품별 공정 수순 및 재공 정보 (WIP_INFO)
         wip_data = pd.DataFrame([
             {'PLAN_PROD_KEY': 'P1', 'OPER_ID': 'OP10', 'OPER_SEQ': 10, 'WIP_QTY': 15000},
@@ -76,7 +79,7 @@ class TestCombinatorialBenchmarkService(RLSchedulerService):
         
         # 6. Tool 갯수 정보 (TOOL_QTY_INFO)
         tool_qty_data = pd.DataFrame([
-            {'BATCH_ID': b, 'EQP_MODEL_CD': m, 'TOOL_QTY': 20}
+            {'RULE_TIMEKEY': TK, 'BATCH_ID': b, 'EQP_MODEL_CD': m, 'TOOL_QTY': 20}
             for b in ['B1', 'B2', 'B3', 'B4', 'B5', 'B6']
             for m in ['MODEL_A', 'MODEL_B', 'MODEL_C']
         ])
@@ -91,15 +94,22 @@ class TestCombinatorialBenchmarkService(RLSchedulerService):
             {'PLAN_PROD_KEY': 'P3', 'OPER_ID': 'OP20', 'START_TIME': '2026051800', 'END_TIME': '2026051824', 'PLAN_QTY': 5000}
         ])
         
-        return {
-            'wip_info': wip_data,
-            'uph_info': uph_data,
-            'eqp_qty_info': eqp_qty_data,
-            'avail_info': avail_data,
-            'batch_tool_info': batch_tool_data,
+        def _with_tk(df):
+            if df.empty:
+                return df
+            out = df.copy()
+            out.insert(0, 'RULE_TIMEKEY', TK)
+            return out
+
+        return self._filter_data_by_rule_timekey({
+            'wip_info': _with_tk(wip_data),
+            'uph_info': _with_tk(uph_data),
+            'eqp_qty_info': _with_tk(eqp_qty_data),
+            'avail_info': _with_tk(avail_data),
+            'batch_tool_info': _with_tk(batch_tool_data),
             'tool_qty_info': tool_qty_data,
-            'plan_info': plan_data
-        }
+            'plan_info': _with_tk(plan_data),
+        }, resolved_tk)
 
 if __name__ == "__main__":
     print("[1단계] 조합최적화 벤치마크 테스트 서비스 초기화 중...")
