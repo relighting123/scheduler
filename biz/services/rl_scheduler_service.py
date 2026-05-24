@@ -168,6 +168,7 @@ class RLSchedulerService:
         self.db.execute("""
             CREATE TABLE RTS_RSLT_MAS (
                 RULE_TIMEKEY VARCHAR2(50) NOT NULL,
+                SEQ_NO NUMBER NOT NULL,
                 EQP_ID VARCHAR2(50) NOT NULL,
                 EQP_MODEL_CD VARCHAR2(50),
                 BATCH_ID VARCHAR2(50),
@@ -202,12 +203,18 @@ class RLSchedulerService:
         crt_tm = datetime.now().strftime("%Y%m%d%H%M%S")
         rows = []
 
-        deployed_units = env.get_deployed_equipment_units() if hasattr(env, 'get_deployed_equipment_units') else []
-        if deployed_units:
-            for unit in deployed_units:
+        all_units = []
+        if hasattr(env, "get_all_equipment_units"):
+            all_units = env.get_all_equipment_units()
+        elif hasattr(env, "get_deployed_equipment_units"):
+            all_units = env.get_deployed_equipment_units()
+
+        if all_units:
+            for seq_no, unit in enumerate(all_units, start=1):
                 prod_qty_str = str(round(float(unit.produced_qty), 4))
                 rows.append({
                     'RULE_TIMEKEY': str(rule_timekey),
+                    'SEQ_NO': seq_no,
                     'EQP_ID': unit.eqp_id,
                     'EQP_MODEL_CD': unit.eqp_model_cd,
                     'BATCH_ID': unit.batch_id,
@@ -223,10 +230,10 @@ class RLSchedulerService:
 
         # fallback: equipment registry 미사용 환경
         for p_idx, prod in enumerate(env.products):
-            if prod.startswith("PAD_PROD_"):
+            if prod.startswith("_EMPTY"):
                 continue
             for s_idx, oper in enumerate(env.processes):
-                if oper.startswith("PAD_PROC_"):
+                if oper.startswith("_EMPTY"):
                     continue
                 batch_id = env.batch_id_map.get((prod, oper), 'EQP')
                 produced_qty = float(env.produced[p_idx, s_idx])
@@ -239,6 +246,7 @@ class RLSchedulerService:
                     for seq in range(1, eqp_count + 1):
                         rows.append({
                             'RULE_TIMEKEY': str(rule_timekey),
+                            'SEQ_NO': len(rows) + 1,
                             'EQP_ID': f"{model}-{seq:05d}",
                             'EQP_MODEL_CD': model,
                             'BATCH_ID': batch_id,
@@ -284,10 +292,10 @@ class RLSchedulerService:
             self.db.bulk_execute(
                 """
                 INSERT INTO RTS_RSLT_MAS (
-                    RULE_TIMEKEY, EQP_ID, EQP_MODEL_CD, BATCH_ID, START_TM, END_TM,
+                    RULE_TIMEKEY, SEQ_NO, EQP_ID, EQP_MODEL_CD, BATCH_ID, START_TM, END_TM,
                     PLAN_PROD_ATTR_VAL, PROD_QTY, CUM_PROD_QTY, CRT_USET_ID, CRT_TM
                 ) VALUES (
-                    :RULE_TIMEKEY, :EQP_ID, :EQP_MODEL_CD, :BATCH_ID, :START_TM, :END_TM,
+                    :RULE_TIMEKEY, :SEQ_NO, :EQP_ID, :EQP_MODEL_CD, :BATCH_ID, :START_TM, :END_TM,
                     :PLAN_PROD_ATTR_VAL, :PROD_QTY, :CUM_PROD_QTY, :CRT_USET_ID, :CRT_TM
                 )
                 """,
@@ -535,7 +543,7 @@ class RLSchedulerService:
                 'plan_info': pd.DataFrame(columns=['RULE_TIMEKEY', 'PLAN_PROD_KEY', 'OPER_ID', 'START_TIME', 'END_TIME', 'PLAN_QTY']),
             }, resolved_tk)
 
-    def generate_expert_data(self, env, num_samples=1000):
+    def generate_expert_data(self, env, num_samples=5000):
         """휴리스틱 룰(UPH 기반 최적화)을 적용한 전문가 데이터 생성"""
         from biz.services.rl.expert import HeuristicExpert
         expert = HeuristicExpert(env)
@@ -556,11 +564,11 @@ class RLSchedulerService:
                 
         return np.array(obs_list), np.array(action_list)
 
-    def pretrain_behavior_cloning(self, model, expert_obs, expert_actions, epochs=10, batch_size=32):
+    def pretrain_behavior_cloning(self, model, expert_obs, expert_actions, epochs=20, batch_size=64):
         """PyTorch를 이용한 Policy Network 지도 학습 (행동 복제)"""
         print("모방학습(Behavior Cloning) 사전 학습 시작...")
         policy = model.policy
-        optimizer = optim.Adam(policy.parameters(), lr=1e-3)
+        optimizer = optim.Adam(policy.parameters(), lr=3e-4)
         
         # numpy 배열을 텐서로 변환하고, 모델의 디바이스(CPU/GPU)로 이동
         dataset = TensorDataset(
@@ -731,7 +739,10 @@ class RLSchedulerService:
         pretrain_bc=True,
         n_envs=4,
         batch_size=64,
-        n_steps=2048,
+        n_steps=1024,
+        bc_samples=5000,
+        bc_epochs=20,
+        ent_coef=0.05,
         rule_timekey=None,
         from_rule_timekey=None,
         to_rule_timekey=None,
@@ -739,16 +750,26 @@ class RLSchedulerService:
         benchmark_dataset='benchmark_dataset',
     ):
         """RULE_TIMEKEY 구간(from~to) 또는 단일 키로 학습 후 벤치마크 데이터셋 성능 비교."""
+        from biz.services.rl.env.env_schema import compute_canonical_schema
+
         snapshots = self.fetch_training_snapshots(
             from_rule_timekey=from_rule_timekey,
             to_rule_timekey=to_rule_timekey,
             rule_timekey=rule_timekey,
         )
         bc_data = snapshots[0]
+        canonical = compute_canonical_schema(snapshots)
 
         def make_env():
             if len(snapshots) == 1:
-                return Monitor(SchedulerEnv(data=snapshots[0]))
+                return Monitor(
+                    SchedulerEnv(
+                        data=snapshots[0],
+                        fixed_products=canonical[0],
+                        fixed_processes=canonical[1],
+                        fixed_models=canonical[2],
+                    )
+                )
             return Monitor(SnapshotRotationEnv(snapshots))
 
         if n_envs > 1:
@@ -756,12 +777,28 @@ class RLSchedulerService:
         else:
             env = DummyVecEnv([make_env])
 
-        model = PPO("MlpPolicy", env, batch_size=batch_size, n_steps=n_steps, ent_coef=0.01, verbose=1)
+        model = PPO(
+            "MlpPolicy",
+            env,
+            batch_size=batch_size,
+            n_steps=n_steps,
+            ent_coef=ent_coef,
+            verbose=1,
+        )
 
         if pretrain_bc:
-            single_env = SchedulerEnv(data=bc_data)
-            expert_obs, expert_actions = self.generate_expert_data(single_env, num_samples=1000)
-            self.pretrain_behavior_cloning(model, expert_obs, expert_actions, epochs=5)
+            single_env = SchedulerEnv(
+                data=bc_data,
+                fixed_products=canonical[0],
+                fixed_processes=canonical[1],
+                fixed_models=canonical[2],
+            )
+            expert_obs, expert_actions = self.generate_expert_data(
+                single_env, num_samples=bc_samples
+            )
+            self.pretrain_behavior_cloning(
+                model, expert_obs, expert_actions, epochs=bc_epochs
+            )
 
         print("강화학습(PPO) 시작...")
         callback = PlottingCallback(save_path="learning_curve.png")
@@ -781,10 +818,10 @@ class RLSchedulerService:
         """최종 시뮬레이션 시점의 제품/공정/장비모델별 대수 집계"""
         rows = []
         for p_idx, prod in enumerate(env.products):
-            if prod.startswith("PAD_PROD_"):
+            if prod.startswith("_EMPTY"):
                 continue
             for s_idx, oper in enumerate(env.processes):
-                if oper.startswith("PAD_PROC_"):
+                if oper.startswith("_EMPTY"):
                     continue
                 for m_idx, model in enumerate(env.models):
                     qty = float(env.active_eqp[p_idx, s_idx, m_idx])
@@ -822,7 +859,7 @@ class RLSchedulerService:
                 last_oper_by_prod[row['PLAN_PROD_KEY']] = row['OPER_ID']
 
         process_candidates = [proc for proc in env.processes if not proc.startswith("PAD_PROC_")]
-        for prod in [p for p in env.products if not p.startswith("PAD_PROD_")]:
+        for prod in [p for p in env.products if not p.startswith("_EMPTY")]:
             if prod in last_oper_by_prod:
                 continue
             if not process_candidates:
@@ -834,7 +871,7 @@ class RLSchedulerService:
             last_oper_by_prod[prod] = fallback_oper
 
         rows = []
-        for prod in [p for p in env.products if not p.startswith("PAD_PROD_")]:
+        for prod in [p for p in env.products if not p.startswith("_EMPTY")]:
             oper = last_oper_by_prod.get(prod)
             if oper is None:
                 continue
@@ -1100,7 +1137,7 @@ class RLSchedulerService:
         # 4. 강화학습 (RL PPO) 시뮬레이션
         print("\n[3단계] 강화학습(RL PPO) 모델 학습 및 시뮬레이션 진행 중...")
         # 학습 수행
-        self.train_model(total_timesteps=total_timesteps, pretrain_bc=True, n_envs=1)
+        self.train_model(total_timesteps=total_timesteps, pretrain_bc=True, n_envs=4)
         
         env_rl = SchedulerEnv(data=data, max_steps=24)
         try:

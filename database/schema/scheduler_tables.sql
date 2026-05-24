@@ -89,6 +89,7 @@ CREATE TABLE RTD_CONV_HI AS SELECT * FROM RTD_CONV_INF WHERE 1=0;
 -- RTS 결과 마스터 (추론 Output)
 CREATE TABLE RTS_RSLT_MAS (
     RULE_TIMEKEY       VARCHAR2(50)      NOT NULL,
+    SEQ_NO             NUMBER            NOT NULL,
     EQP_ID             VARCHAR2(50)      NOT NULL,
     EQP_MODEL_CD       VARCHAR2(50),
     BATCH_ID           VARCHAR2(50),
@@ -104,6 +105,7 @@ CREATE TABLE RTS_RSLT_MAS (
 
 COMMENT ON TABLE  RTS_RSLT_MAS                         IS 'RTS 결과 마스터';
 COMMENT ON COLUMN RTS_RSLT_MAS.RULE_TIMEKEY            IS '룰 타임키';
+COMMENT ON COLUMN RTS_RSLT_MAS.SEQ_NO                   IS '장비 출력 순번 (EQP_ID 정렬)';
 COMMENT ON COLUMN RTS_RSLT_MAS.EQP_ID                  IS '설비 ID (모델 풀 기준 고정)';
 COMMENT ON COLUMN RTS_RSLT_MAS.EQP_MODEL_CD            IS '설비 모델 코드';
 COMMENT ON COLUMN RTS_RSLT_MAS.BATCH_ID                IS '현재 배치 ID (Tool 교체 단위)';

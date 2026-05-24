@@ -3,25 +3,37 @@ import random
 
 import gymnasium as gym
 
+from biz.services.rl.env.env_schema import compute_canonical_schema
 from biz.services.rl.env.scheduler_env import SchedulerEnv
 
 
 class SnapshotRotationEnv(gym.Env):
-    """from~to 구간의 스냅샷 목록으로 학습 데이터 다양화."""
+    """from~to 구간 스냅샷 학습 — 전 스냅샷 합집합으로 obs/action 차원 고정."""
 
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, snapshots: list):
+    def __init__(self, snapshots: list, max_prods=None, max_procs=None):
         if not snapshots:
             raise ValueError("학습용 스냅샷이 비어 있습니다.")
         self.snapshots = snapshots
-        self._inner = SchedulerEnv(data=snapshots[0])
+        self.canonical_products, self.canonical_processes, self.canonical_models = (
+            compute_canonical_schema(snapshots, max_prods=max_prods, max_procs=max_procs)
+        )
+        self._inner = self._make_inner_env(snapshots[0])
         self.observation_space = self._inner.observation_space
         self.action_space = self._inner.action_space
 
+    def _make_inner_env(self, data):
+        return SchedulerEnv(
+            data=data,
+            fixed_products=self.canonical_products,
+            fixed_processes=self.canonical_processes,
+            fixed_models=self.canonical_models,
+        )
+
     def reset(self, seed=None, options=None):
         data = random.choice(self.snapshots)
-        self._inner = SchedulerEnv(data=data)
+        self._inner = self._make_inner_env(data)
         self.observation_space = self._inner.observation_space
         self.action_space = self._inner.action_space
         return self._inner.reset(seed=seed, options=options)
