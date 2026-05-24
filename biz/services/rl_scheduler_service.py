@@ -11,6 +11,9 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 from biz.services.rl.callbacks import PlottingCallback
 from biz.services.rl.env.scheduler_env import SchedulerEnv
+from biz.services.rl.env.snapshot_rotation_env import SnapshotRotationEnv
+
+
 class RLSchedulerService:
     # 학습(Input) 데이터 스냅샷 식별자 (YYYYMMDDHHMMSS)
     DEFAULT_RULE_TIMEKEY = '20251020070000'
@@ -46,6 +49,59 @@ class RLSchedulerService:
             snapshot = df[df['RULE_TIMEKEY'] == rule_timekey].copy()
             filtered[key] = snapshot.drop(columns=['RULE_TIMEKEY'], errors='ignore')
         return filtered
+
+    def _normalize_timekey_arg(self, value):
+        if value is None:
+            return None
+        s = str(value).strip()
+        if s in ('', 'N/A'):
+            return None
+        return s
+
+    def _list_rule_timekeys_in_range(self, from_rule_timekey=None, to_rule_timekey=None):
+        """학습 구간 [from, to] 내 DISTINCT RULE_TIMEKEY 목록 (문자열 정렬 기준)."""
+        from_tk = self._normalize_timekey_arg(from_rule_timekey)
+        to_tk = self._normalize_timekey_arg(to_rule_timekey)
+
+        if not from_tk and not to_tk:
+            return [self._resolve_rule_timekey(None)]
+        if from_tk and not to_tk:
+            to_tk = from_tk
+        elif to_tk and not from_tk:
+            from_tk = to_tk
+
+        try:
+            rows = self.db.select_list(
+                "SELECT DISTINCT RULE_TIMEKEY FROM WIP_INFO ORDER BY RULE_TIMEKEY"
+            )
+            keys = [
+                str(r['RULE_TIMEKEY'])
+                for r in rows
+                if r.get('RULE_TIMEKEY') and from_tk <= str(r['RULE_TIMEKEY']) <= to_tk
+            ]
+            if keys:
+                return keys
+        except Exception:
+            pass
+        return [self._resolve_rule_timekey(to_tk)]
+
+    def fetch_training_snapshots(
+        self,
+        from_rule_timekey=None,
+        to_rule_timekey=None,
+        rule_timekey=None,
+    ):
+        """학습에 사용할 스냅샷 목록. 단일 rule_timekey 또는 from~to 구간."""
+        single = self._normalize_timekey_arg(rule_timekey)
+        if single:
+            return [self.fetch_data(rule_timekey=single)]
+        keys = self._list_rule_timekeys_in_range(from_rule_timekey, to_rule_timekey)
+        snapshots = [self.fetch_data(rule_timekey=k) for k in keys]
+        print(
+            f"[학습 데이터] RULE_TIMEKEY {len(snapshots)}개 스냅샷 "
+            f"({', '.join(keys)})"
+        )
+        return snapshots
 
     def _create_learning_tables(self):
         """학습(Input) 테이블 7종 생성 (RULE_TIMEKEY 포함)."""
@@ -378,29 +434,192 @@ class RLSchedulerService:
             print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(dataloader):.4f}")
         print("모방학습 완료.")
 
-    def train_model(self, total_timesteps=10000, pretrain_bc=True, n_envs=4, batch_size=64, n_steps=2048, rule_timekey=None):
-        data = self.fetch_data(rule_timekey=rule_timekey)
-        
+    def _collect_op20_metrics(self, env, products=None):
+        """최종 공정(OP20) 기준 제품별·평균 계획달성률 및 장비 전환 횟수 집계."""
+        if products is None:
+            products = ['P1', 'P2', 'P3']
+        results = {}
+        for p_idx, p_name in enumerate(env.products):
+            if p_name not in products:
+                continue
+            s_idx = env.proc_idx.get('OP20')
+            if s_idx is None:
+                continue
+            prod_qty = env.produced[p_idx, s_idx]
+            plan_qty = env.plan[p_idx, s_idx]
+            rate = (prod_qty / plan_qty * 100.0) if plan_qty > 0 else 0.0
+            results[f"{p_name}_OP20_ACHIEVEMENT"] = round(rate, 2)
+        avg = round(sum(results.values()) / len(results), 2) if results else 0.0
+        results['AVG_ACHIEVEMENT'] = avg
+        return results
+
+    def _run_simulation_with_policy(
+        self,
+        data,
+        max_steps=24,
+        model=None,
+        expert_cls=None,
+        method_name='simulation',
+    ):
+        """단일 데이터 스냅샷으로 24스텝 시뮬레이션 후 지표·전환 횟수 반환."""
+        env = SchedulerEnv(data=data, max_steps=max_steps)
+        expert = expert_cls(env) if expert_cls is not None else None
+        obs, _ = env.reset()
+        transfers = 0
+        done = False
+        while not done:
+            if expert is not None:
+                action = expert.select_action()
+            elif model is not None:
+                action, _ = model.predict(obs, deterministic=True)
+                action = int(action)
+            else:
+                action = env.action_space.sample()
+            obs, reward, terminated, truncated, info = env.step(action)
+            if info.get('transfers'):
+                transfers += len(info['transfers'])
+            done = terminated or truncated
+
+        env.print_final_summary(method_name=method_name)
+        metrics = self._collect_op20_metrics(env)
+        metrics['TRANSFERS'] = transfers
+        return metrics, env
+
+    def evaluate_on_test_data(
+        self,
+        test_scenario='combinatorial',
+        model_path='scheduler_ppo_model',
+        max_steps=24,
+    ):
+        """test/data 시나리오로 학습 모델·휴리스틱·정답(Optimal) 성능 비교."""
+        from biz.services.rl.test_data_loader import TestDataLoader
+        from biz.services.rl.expert import HeuristicExpert, OptimalExpert
+
+        print("\n" + "=" * 80)
+        print(f" [테스트 데이터 성능 비교 — 시나리오: {test_scenario}]")
+        print("=" * 80)
+
+        loader = TestDataLoader()
+        data = loader.load_for_env(test_scenario)
+        ground_truth = loader.load_ground_truth(test_scenario)
+
+        print("\n[1] 정답지(Optimal Ground Truth) 시뮬레이션...")
+        gt_metrics, _ = self._run_simulation_with_policy(
+            data, max_steps=max_steps, expert_cls=OptimalExpert, method_name='optimal_test'
+        )
+
+        print("\n[2] 휴리스틱(Heuristic Expert) 시뮬레이션...")
+        heu_metrics, _ = self._run_simulation_with_policy(
+            data, max_steps=max_steps, expert_cls=HeuristicExpert, method_name='heuristic_test'
+        )
+
+        print("\n[3] 강화학습(RL PPO) 시뮬레이션...")
+        try:
+            model = PPO.load(model_path)
+        except Exception:
+            print(f"[경고] 모델 '{model_path}' 없음 — 무작위 액션으로 평가합니다.")
+            model = None
+        rl_metrics, env_rl = self._run_simulation_with_policy(
+            data, max_steps=max_steps, model=model, method_name='rl_test'
+        )
+
+        def _row(label, m):
+            return {
+                'Method': label,
+                'P1 달성률(%)': m.get('P1_OP20_ACHIEVEMENT', 0),
+                'P2 달성률(%)': m.get('P2_OP20_ACHIEVEMENT', 0),
+                'P3 달성률(%)': m.get('P3_OP20_ACHIEVEMENT', 0),
+                '평균 달성률(%)': m.get('AVG_ACHIEVEMENT', 0),
+                '장비 전환 횟수': m.get('TRANSFERS', 0),
+            }
+
+        comparison_df = pd.DataFrame([
+            _row('1. 정답지 (Optimal GT)', gt_metrics),
+            _row('2. 휴리스틱 (Expert)', heu_metrics),
+            _row('3. 강화학습 (RL PPO)', rl_metrics),
+        ])
+
+        print("\n" + "=" * 80)
+        print(" [테스트 성능 비교 결과]")
+        print("=" * 80)
+        print(comparison_df.to_string(index=False))
+        print("=" * 80)
+
+        ref = ground_truth.setdefault('optimal_reference', {})
+        for k, v in gt_metrics.items():
+            ref[k] = v
+
+        log_dir = os.path.join(os.getcwd(), 'logs', 'simulation_logs')
+        os.makedirs(log_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_path = os.path.join(
+            log_dir, f'test_eval_{test_scenario}_{timestamp}.xlsx'
+        )
+        with pd.ExcelWriter(report_path) as writer:
+            comparison_df.to_excel(writer, sheet_name='COMPARISON', index=False)
+            pd.DataFrame([ref]).to_excel(writer, sheet_name='GROUND_TRUTH', index=False)
+        print(f"[성공] 테스트 평가 리포트 저장: {report_path}")
+
+        rl_allocation_df = self._build_final_allocation_df(env_rl)
+        rl_achievement_df = self._build_last_process_achievement_df(env_rl, data)
+        self.save_inference_summary(
+            rule_timekey=ground_truth.get('rule_timekey', 'test'),
+            allocation_df=rl_allocation_df,
+            achievement_df=rl_achievement_df,
+            file_prefix=f'test_inference_{test_scenario}',
+        )
+
+        return comparison_df
+
+    def train_model(
+        self,
+        total_timesteps=10000,
+        pretrain_bc=True,
+        n_envs=4,
+        batch_size=64,
+        n_steps=2048,
+        rule_timekey=None,
+        from_rule_timekey=None,
+        to_rule_timekey=None,
+        run_test_eval=True,
+        test_scenario='combinatorial',
+    ):
+        """RULE_TIMEKEY 구간(from~to) 또는 단일 키로 학습 후 테스트 데이터 성능 비교."""
+        snapshots = self.fetch_training_snapshots(
+            from_rule_timekey=from_rule_timekey,
+            to_rule_timekey=to_rule_timekey,
+            rule_timekey=rule_timekey,
+        )
+        bc_data = snapshots[0]
+
         def make_env():
-            return Monitor(SchedulerEnv(data=data))
-            
+            if len(snapshots) == 1:
+                return Monitor(SchedulerEnv(data=snapshots[0]))
+            return Monitor(SnapshotRotationEnv(snapshots))
+
         if n_envs > 1:
             env = SubprocVecEnv([make_env for _ in range(n_envs)])
         else:
             env = DummyVecEnv([make_env])
-        
+
         model = PPO("MlpPolicy", env, batch_size=batch_size, n_steps=n_steps, ent_coef=0.01, verbose=1)
-        
+
         if pretrain_bc:
-            single_env = SchedulerEnv(data=data)
+            single_env = SchedulerEnv(data=bc_data)
             expert_obs, expert_actions = self.generate_expert_data(single_env, num_samples=1000)
             self.pretrain_behavior_cloning(model, expert_obs, expert_actions, epochs=5)
-            
+
         print("강화학습(PPO) 시작...")
         callback = PlottingCallback(save_path="learning_curve.png")
         model.learn(total_timesteps=total_timesteps, callback=callback)
         model.save("scheduler_ppo_model")
         print("학습 완료 및 모델 저장됨")
+
+        comparison_df = None
+        if run_test_eval:
+            print("\n[학습 후] 테스트 데이터 기반 성능 비교를 수행합니다...")
+            comparison_df = self.evaluate_on_test_data(test_scenario=test_scenario)
+        return comparison_df
 
     def _build_final_allocation_df(self, env):
         """최종 시뮬레이션 시점의 제품/공정/장비모델별 대수 집계"""
@@ -546,9 +765,14 @@ class RLSchedulerService:
 
         print(f"[성공] 추론 요약 리포트가 엑셀로 저장되었습니다: {file_path}")
 
-    def run_inference(self, rule_timekey=None):
-        """추론을 수행하고 결과를 DB에 저장합니다."""
+    def run_inference(self, rule_timekey=None, output_rule_timekey=None):
+        """추론 수행.
+
+        - Input 스냅샷: rule_timekey 지정, 미지정 시 WIP_INFO MAX(RULE_TIMEKEY)
+        - Output(RTD_CONV) 키: output_rule_timekey 지정, 미지정 시 현재 시각(YYYYMMDDHHMMSS)
+        """
         input_timekey = self._resolve_rule_timekey(rule_timekey)
+        print(f"[추론] Input RULE_TIMEKEY={input_timekey} (데이터 스냅샷)")
         data = self.fetch_data(rule_timekey=input_timekey)
         env = SchedulerEnv(data=data)
 
@@ -562,11 +786,12 @@ class RLSchedulerService:
         done = False
 
         results = []
-        # 출력(RTD_CONV)용 RULE_TIMEKEY: 미지정 시 현재 시각 14자리
-        if not rule_timekey or rule_timekey == 'N/A':
-            rule_timekey = datetime.now().strftime("%Y%m%d%H%M%S")
+        out_tk = self._normalize_timekey_arg(output_rule_timekey)
+        if out_tk:
+            output_tk = out_tk
         else:
-            rule_timekey = str(rule_timekey)
+            output_tk = datetime.now().strftime("%Y%m%d%H%M%S")
+        print(f"[추론] Output RULE_TIMEKEY={output_tk} (RTD_CONV 등 결과 키)")
         
         while not done:
             if model:
@@ -582,7 +807,7 @@ class RLSchedulerService:
             if 'transfers' in info:
                 for transfer in info['transfers']:
                     results.append({
-                        'RULE_TIMEKEY': rule_timekey,
+                        'RULE_TIMEKEY': output_tk,
                         'FROM_PLAN_PROD_KEY': transfer['FROM_PROD'],
                         'FROM_OPER_ID': transfer['FROM_PROC'],
                         'EQP_MODEL_CD': transfer['MODEL'],
@@ -600,8 +825,8 @@ class RLSchedulerService:
 
         allocation_df = self._build_final_allocation_df(env)
         achievement_df = self._build_last_process_achievement_df(env, data)
-        self.save_inference_summary(rule_timekey, allocation_df, achievement_df)
-            
+        self.save_inference_summary(output_tk, allocation_df, achievement_df)
+
         return results
 
     def save_production_logs(self, logs):
