@@ -198,7 +198,7 @@ class RLSchedulerService:
                 CUM_PROD_QTY VARCHAR2(50),
                 CRT_USET_ID VARCHAR2(50),
                 CRT_TM VARCHAR2(14),
-                CONSTRAINT PK_RTS_RSLT_MAS PRIMARY KEY (RULE_TIMEKEY, EQP_ID)
+                CONSTRAINT PK_RTS_RSLT_MAS PRIMARY KEY (RULE_TIMEKEY, EQP_ID, SEQ_NO)
             )
         """)
 
@@ -228,12 +228,33 @@ class RLSchedulerService:
         elif hasattr(env, "get_deployed_equipment_units"):
             all_units = env.get_deployed_equipment_units()
 
+        if hasattr(env, "iter_rts_assignment_records"):
+            records = env.iter_rts_assignment_records()
+            for unit, seg in records:
+                prod_qty_str = str(round(float(seg.produced_qty), 4))
+                cum_qty_str = str(round(float(unit.produced_qty), 4))
+                rows.append({
+                    'RULE_TIMEKEY': str(rule_timekey),
+                    'SEQ_NO': seg.seq_no,
+                    'EQP_ID': unit.eqp_id,
+                    'EQP_MODEL_CD': unit.eqp_model_cd,
+                    'BATCH_ID': seg.batch_id,
+                    'START_TM': start_tm,
+                    'END_TM': end_tm,
+                    'PLAN_PROD_ATTR_VAL': seg.plan_prod_attr_val,
+                    'PROD_QTY': prod_qty_str,
+                    'CUM_PROD_QTY': cum_qty_str,
+                    'CRT_USET_ID': crt_user_id,
+                    'CRT_TM': crt_tm,
+                })
+            return rows
+
         if all_units:
-            for seq_no, unit in enumerate(all_units, start=1):
+            for unit in all_units:
                 prod_qty_str = str(round(float(unit.produced_qty), 4))
                 rows.append({
                     'RULE_TIMEKEY': str(rule_timekey),
-                    'SEQ_NO': seq_no,
+                    'SEQ_NO': 1,
                     'EQP_ID': unit.eqp_id,
                     'EQP_MODEL_CD': unit.eqp_model_cd,
                     'BATCH_ID': unit.batch_id,
@@ -262,11 +283,11 @@ class RLSchedulerService:
                         continue
                     per_eqp_prod = produced_qty / eqp_count if eqp_count > 0 else 0.0
                     prod_qty_str = str(round(per_eqp_prod, 4))
-                    for seq in range(1, eqp_count + 1):
+                    for eqp_seq in range(1, eqp_count + 1):
                         rows.append({
                             'RULE_TIMEKEY': str(rule_timekey),
-                            'SEQ_NO': len(rows) + 1,
-                            'EQP_ID': f"{model}-{seq:05d}",
+                            'SEQ_NO': 1,
+                            'EQP_ID': f"{model}-{eqp_seq:05d}",
                             'EQP_MODEL_CD': model,
                             'BATCH_ID': batch_id,
                             'START_TM': start_tm,

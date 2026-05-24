@@ -2,7 +2,7 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 import os
@@ -21,6 +21,16 @@ class ConvJob:
 
 
 @dataclass
+class AssignmentSegment:
+    """장비(EQP_ID)별 제품·공정(또는 IDLE/CONV) 할당 순서 — SEQ_NO는 장비 내 1부터."""
+    seq_no: int
+    plan_prod_attr_val: str
+    batch_id: Optional[str] = None
+    start_step: int = 0
+    produced_qty: float = 0.0
+
+
+@dataclass
 class EquipmentUnit:
     """모델 풀 기반 개별 설비. EQP_ID는 생성 후 변경하지 않는다."""
     eqp_id: str
@@ -30,6 +40,8 @@ class EquipmentUnit:
     oper_id: Optional[str] = None
     produced_qty: float = 0.0
     conv_remaining_steps: int = 0
+    assignment_history: List[AssignmentSegment] = field(default_factory=list)
+    _logged_attr: Optional[str] = field(default=None, repr=False)
 
     def is_idle(self) -> bool:
         return self.plan_prod_key is None and self.conv_remaining_steps <= 0
@@ -162,10 +174,36 @@ class SchedulerEnv(gym.Env):
     def _slot_key(self, p: int, s: int, m: int) -> Tuple[int, int, int]:
         return (p, s, m)
 
+    def _current_unit_attr(self, unit: EquipmentUnit) -> str:
+        return unit.plan_prod_attr_val or "IDLE"
+
+    def _sync_unit_assignment_log(self, unit: EquipmentUnit):
+        """장비별 할당 상태 변경 시 SEQ_NO(1부터) 이력 기록."""
+        attr = self._current_unit_attr(unit)
+        if unit._logged_attr == attr:
+            return
+        unit._logged_attr = attr
+        unit.assignment_history.append(
+            AssignmentSegment(
+                seq_no=len(unit.assignment_history) + 1,
+                plan_prod_attr_val=attr,
+                batch_id=unit.batch_id,
+                start_step=self.current_step,
+            )
+        )
+
+    def _add_unit_segment_production(self, unit: EquipmentUnit, qty: float):
+        if qty <= 0:
+            return
+        unit.produced_qty += qty
+        if unit.assignment_history:
+            unit.assignment_history[-1].produced_qty += qty
+
     def _clear_unit_location(self, unit: EquipmentUnit):
         unit.batch_id = None
         unit.plan_prod_key = None
         unit.oper_id = None
+        self._sync_unit_assignment_log(unit)
 
     def _assign_unit_to_slot(self, unit: EquipmentUnit, p: int, s: int, batch_id: Optional[str]):
         m = self.model_idx[unit.eqp_model_cd]
@@ -174,6 +212,7 @@ class SchedulerEnv(gym.Env):
         unit.batch_id = batch_id
         unit.plan_prod_key = self.products[p]
         unit.oper_id = self.processes[s]
+        self._sync_unit_assignment_log(unit)
 
     def _take_one_from_idle(self, m: int) -> Optional[EquipmentUnit]:
         model = self.models[m]
@@ -221,6 +260,7 @@ class SchedulerEnv(gym.Env):
     ):
         """이동 직후 1 slot 비가용(CONV) — 다음 step부터 목적지 가동."""
         unit.conv_remaining_steps = 1
+        self._sync_unit_assignment_log(unit)
         self.conv_queue.append(
             ConvJob(
                 unit=unit,
@@ -303,10 +343,20 @@ class SchedulerEnv(gym.Env):
         return deployed
 
     def get_all_equipment_units(self) -> List[EquipmentUnit]:
-        """설비 풀 전체를 EQP_ID 순으로 반환 (RTS_RSLT_MAS SEQ_NO용)."""
+        """설비 풀 전체를 EQP_ID 순으로 반환."""
         if not hasattr(self, "equipment_units"):
             return []
         return sorted(self.equipment_units, key=lambda u: u.eqp_id)
+
+    def iter_rts_assignment_records(self) -> List[Tuple[EquipmentUnit, AssignmentSegment]]:
+        """RTS_RSLT_MAS용 (장비, 장비별 SEQ 할당 구간) 목록."""
+        records: List[Tuple[EquipmentUnit, AssignmentSegment]] = []
+        for unit in self.get_all_equipment_units():
+            if not unit.assignment_history:
+                self._sync_unit_assignment_log(unit)
+            for seg in unit.assignment_history:
+                records.append((unit, seg))
+        return records
 
 
     def reset(self, seed=None, options=None):
@@ -388,8 +438,16 @@ class SchedulerEnv(gym.Env):
         self._build_equipment_pool()
         self._deploy_initial_equipment()
         self._relocate_eqp_from_unavailable_slots()
+        self._record_initial_assignments()
         self.production_logs = []
         return self._get_obs(), {}
+
+    def _record_initial_assignments(self):
+        """초기 배치·유휴 상태를 장비별 SEQ_NO=1부터 이력에 기록."""
+        for unit in self.equipment_units:
+            unit.assignment_history = []
+            unit._logged_attr = None
+            self._sync_unit_assignment_log(unit)
 
     def _get_obs(self):
         # Simplified normalization for observation
@@ -545,7 +603,7 @@ class SchedulerEnv(gym.Env):
                     total_unit_cap = sum(cap for _, cap in unit_contributions)
                     for unit, unit_cap in unit_contributions:
                         share = actual_produce * (unit_cap / total_unit_cap) if total_unit_cap > 0 else 0.0
-                        unit.produced_qty += share
+                        self._add_unit_segment_production(unit, share)
 
                 self.produced[p, s] += actual_produce
                 step_production += actual_produce
