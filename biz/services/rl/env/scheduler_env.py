@@ -7,6 +7,18 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 import os
 
+from biz.services.rl.env.env_schema import discover_entities_from_data
+
+
+@dataclass
+class ConvJob:
+    """Tool 교체(배치 변경) 시 1 slot 비가용 후 목적지 배치."""
+    unit: "EquipmentUnit"
+    release_step: int
+    t_prod: int
+    t_proc: int
+    to_batch: Optional[str]
+
 
 @dataclass
 class EquipmentUnit:
@@ -17,31 +29,50 @@ class EquipmentUnit:
     plan_prod_key: Optional[str] = None
     oper_id: Optional[str] = None
     produced_qty: float = 0.0
+    conv_remaining_steps: int = 0
 
     def is_idle(self) -> bool:
-        return self.plan_prod_key is None
+        return self.plan_prod_key is None and self.conv_remaining_steps <= 0
+
+    def is_in_conv(self) -> bool:
+        return self.conv_remaining_steps > 0
 
     @property
     def plan_prod_attr_val(self) -> Optional[str]:
+        if self.conv_remaining_steps > 0:
+            return "CONV"
         if self.plan_prod_key and self.oper_id:
             return f"{self.plan_prod_key}|{self.oper_id}"
-        return None
+        return "IDLE"
 
 
 class SchedulerEnv(gym.Env):
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, data: Dict[str, pd.DataFrame], max_prods: int = 10, max_procs: int = 10, max_steps: int = 24):
+    def __init__(
+        self,
+        data: Dict[str, pd.DataFrame],
+        max_prods: Optional[int] = None,
+        max_procs: Optional[int] = None,
+        max_steps: int = 24,
+        fixed_products: Optional[List[str]] = None,
+        fixed_processes: Optional[List[str]] = None,
+        fixed_models: Optional[List[str]] = None,
+    ):
         super(SchedulerEnv, self).__init__()
         self.data = data
         self.max_prods = max_prods
         self.max_procs = max_procs
         self.max_steps = max_steps
-        
+        self.fixed_products = fixed_products
+        self.fixed_processes = fixed_processes
+        self.fixed_models = fixed_models
+
         self.products = []
         self.processes = []
         self.models = []
-        
+        self.conv_queue: List[ConvJob] = []
+
         self._discover_entities()
         
         self.num_prods = len(self.products)
@@ -61,30 +92,30 @@ class SchedulerEnv(gym.Env):
         self.reset()
 
     def _discover_entities(self):
-        wip_df = self.data.get('wip_info', pd.DataFrame())
-        uph_df = self.data.get('uph_info', pd.DataFrame())
-        
-        prods = set()
-        procs = set()
-        models = set()
-        
-        if not wip_df.empty:
-            prods.update(wip_df['PLAN_PROD_KEY'].unique())
-            procs.update(wip_df['OPER_ID'].unique())
-            
-        if not uph_df.empty:
-            prods.update(uph_df['PLAN_PROD_KEY'].unique())
-            procs.update(uph_df['OPER_ID'].unique())
-            models.update(uph_df['EQP_MODEL_CD'].unique())
-            
-        self.products = sorted(list(prods))[:self.max_prods]
-        self.processes = sorted(list(procs))[:self.max_procs]
-        self.models = sorted(list(models))
-        
-        while len(self.products) < self.max_prods:
-            self.products.append(f"PAD_PROD_{len(self.products)}")
-        while len(self.processes) < self.max_procs:
-            self.processes.append(f"PAD_PROC_{len(self.processes)}")
+        if self.fixed_products is not None:
+            self.products = list(self.fixed_products)
+            self.processes = list(self.fixed_processes)
+            self.models = list(self.fixed_models)
+            return
+        self.products, self.processes, self.models = discover_entities_from_data(
+            self.data,
+            max_prods=self.max_prods,
+            max_procs=self.max_procs,
+        )
+
+    def _needs_tool_conv(
+        self,
+        unit: EquipmentUnit,
+        from_batch: Optional[str],
+        to_batch: Optional[str],
+        from_is_idle: bool,
+    ) -> bool:
+        """배치(Tool) 변경 시 1 slot 교체 비가용 — 동일 batch는 교체 없음."""
+        if from_is_idle:
+            return False
+        if from_batch is None and to_batch is None:
+            return False
+        return str(from_batch or "") != str(to_batch or "")
 
     def _load_avail_matrix(self):
         """AVAIL_INFO: 장비가 오더에 배치되어 있어도 AVAIL_YN='N'이면 해당 공정에서 진행 불가."""
@@ -153,8 +184,45 @@ class SchedulerEnv(gym.Env):
         return unit
 
     def _return_unit_to_idle(self, unit: EquipmentUnit):
+        if unit.is_in_conv():
+            return
         self._clear_unit_location(unit)
         self.idle_equipment.setdefault(unit.eqp_model_cd, []).append(unit)
+
+    def _release_conv_units(self, force: bool = False):
+        """교체 비가용 기간이 끝난 장비를 목적 슬롯에 배치."""
+        remaining: List[ConvJob] = []
+        for job in self.conv_queue:
+            if force or self.current_step >= job.release_step:
+                job.unit.conv_remaining_steps = 0
+                self._assign_unit_to_slot(job.unit, job.t_prod, job.t_proc, job.to_batch)
+            else:
+                remaining.append(job)
+        self.conv_queue = remaining
+        self._sync_active_eqp_counts()
+
+    def _flush_conv_queue(self):
+        """에피소드 종료 시 남은 CONV 장비를 목적지에 배치."""
+        self._release_conv_units(force=True)
+
+    def _enqueue_tool_conv(
+        self,
+        unit: EquipmentUnit,
+        t_prod: int,
+        t_proc: int,
+        to_batch: Optional[str],
+    ):
+        """이동 직후 1 slot 비가용(CONV) — 다음 step부터 목적지 가동."""
+        unit.conv_remaining_steps = 1
+        self.conv_queue.append(
+            ConvJob(
+                unit=unit,
+                release_step=self.current_step + 1,
+                t_prod=t_prod,
+                t_proc=t_proc,
+                to_batch=to_batch,
+            )
+        )
 
     def _sync_active_eqp_counts(self):
         self.active_eqp.fill(0)
@@ -226,6 +294,12 @@ class SchedulerEnv(gym.Env):
         for units in self.slot_equipment.values():
             deployed.extend(units)
         return deployed
+
+    def get_all_equipment_units(self) -> List[EquipmentUnit]:
+        """설비 풀 전체를 EQP_ID 순으로 반환 (RTS_RSLT_MAS SEQ_NO용)."""
+        if not hasattr(self, "equipment_units"):
+            return []
+        return sorted(self.equipment_units, key=lambda u: u.eqp_id)
 
 
     def reset(self, seed=None, options=None):
@@ -303,6 +377,7 @@ class SchedulerEnv(gym.Env):
                         if self.st_matrix[p, s, m] > 0:
                             self.active_eqp[p, s, m] = 1.0
 
+        self.conv_queue = []
         self._build_equipment_pool()
         self._deploy_initial_equipment()
         self._relocate_eqp_from_unavailable_slots()
@@ -337,7 +412,9 @@ class SchedulerEnv(gym.Env):
 
     def step(self, action):
         transfers = []
-        
+
+        self._release_conv_units()
+
         # 초반(current_step == 0)에는 장비 전환 생성이 있을 수 없으므로 action을 0(전환 없음)으로 처리
         if self.current_step == 0:
             action = 0
@@ -359,7 +436,10 @@ class SchedulerEnv(gym.Env):
                 unit = self._take_one_from_idle(t_model)
                 if unit is not None:
                     self.target_eqp[t_prod, t_proc, t_model] += 1
-                    self.pending_unit_moves.append((t_prod, t_proc, t_model, unit))
+                    if self._needs_tool_conv(unit, None, to_batch, from_is_idle=True):
+                        self._enqueue_tool_conv(unit, t_prod, t_proc, to_batch)
+                    else:
+                        self.pending_unit_moves.append((t_prod, t_proc, t_model, unit))
                     moved = True
                     self._sync_active_eqp_counts()
                     transfers.append({
@@ -367,6 +447,7 @@ class SchedulerEnv(gym.Env):
                         'TO_PROD': self.products[t_prod], 'TO_PROC': self.processes[t_proc],
                         'TO_BATCH': to_batch,
                         'MODEL': self.models[t_model], 'EQP_ID': unit.eqp_id,
+                        'NEEDS_CONV': False,
                     })
 
                 # If no IDLE, pull from another active node (Priority-based: pull from least needed node first)
@@ -398,7 +479,13 @@ class SchedulerEnv(gym.Env):
                         unit = self._take_one_from_slot(best_src_p, best_src_s, t_model)
                         if unit is not None:
                             self.target_eqp[t_prod, t_proc, t_model] += 1
-                            self.pending_unit_moves.append((t_prod, t_proc, t_model, unit))
+                            needs_conv = self._needs_tool_conv(
+                                unit, from_batch, to_batch, from_is_idle=False
+                            )
+                            if needs_conv:
+                                self._enqueue_tool_conv(unit, t_prod, t_proc, to_batch)
+                            else:
+                                self.pending_unit_moves.append((t_prod, t_proc, t_model, unit))
                             moved = True
                             self._sync_active_eqp_counts()
                             transfers.append({
@@ -410,6 +497,7 @@ class SchedulerEnv(gym.Env):
                                 'TO_BATCH': to_batch,
                                 'MODEL': self.models[t_model],
                                 'EQP_ID': unit.eqp_id,
+                                'NEEDS_CONV': needs_conv,
                             })
 
         # Simulate production
@@ -427,6 +515,8 @@ class SchedulerEnv(gym.Env):
                         per_unit_cap = 60.0 / st_val
                         slot_units = self.slot_equipment.get(self._slot_key(p, s, m), [])
                         for unit in slot_units:
+                            if unit.is_in_conv():
+                                continue
                             unit_contributions.append((unit, per_unit_cap))
                             capacity += per_unit_cap
 
@@ -478,7 +568,9 @@ class SchedulerEnv(gym.Env):
         
         self.current_step += 1
         terminated = self.current_step >= self.max_steps
-        
+        if terminated:
+            self._flush_conv_queue()
+
         # Reward calculation (Incremental)
         # 1. 이번 시간(Step)에 생산한 양에 비례한 보상
         total_plan = np.sum(self.plan) + 1e-6
@@ -519,12 +611,11 @@ class SchedulerEnv(gym.Env):
         for p in range(self.num_prods):
             p_name = self.products[p]
             # Skip padding products
-            if "PAD_PROD" in p_name:
+            if p_name.startswith("_EMPTY"):
                 continue
             for s in range(self.num_procs):
                 s_name = self.processes[s]
-                # Skip padding processes
-                if "PAD_PROC" in s_name:
+                if s_name.startswith("_EMPTY"):
                     continue
                 
                 # Check if there is any plan, production, or active equipment
