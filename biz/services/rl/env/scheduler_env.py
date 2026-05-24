@@ -64,6 +64,39 @@ class SchedulerEnv(gym.Env):
         while len(self.processes) < self.max_procs:
             self.processes.append(f"PAD_PROC_{len(self.processes)}")
 
+    def _load_avail_matrix(self):
+        """AVAIL_INFO: 장비가 오더에 배치되어 있어도 AVAIL_YN='N'이면 해당 공정에서 진행 불가."""
+        self.avail_matrix.fill(True)
+        avail_df = self.data.get('avail_info', pd.DataFrame())
+        if avail_df.empty:
+            return
+        for _, row in avail_df.iterrows():
+            p, s, m = row['PLAN_PROD_KEY'], row['OPER_ID'], row['EQP_MODEL_CD']
+            if p in self.prod_idx and s in self.proc_idx and m in self.model_idx:
+                yn = str(row['AVAIL_YN']).strip().upper()
+                self.avail_matrix[self.prod_idx[p], self.proc_idx[s], self.model_idx[m]] = (yn == 'Y')
+
+    def _apply_avail_to_st_matrix(self):
+        """처리 불가 조합은 ST를 0으로 두어 생산·배치 액션에서 제외."""
+        for p in range(self.num_prods):
+            for s in range(self.num_procs):
+                for m in range(self.num_models):
+                    if not self.avail_matrix[p, s, m]:
+                        self.st_matrix[p, s, m] = 0.0
+
+    def _relocate_eqp_from_unavailable_slots(self):
+        """진행 불가 슬롯에 배치된 장비는 해당 모델의 IDLE 풀로 반환."""
+        for p in range(self.num_prods):
+            for s in range(self.num_procs):
+                for m in range(self.num_models):
+                    if not self.avail_matrix[p, s, m] and self.active_eqp[p, s, m] > 0:
+                        self.idle_eqp[m] += self.active_eqp[p, s, m]
+                        self.active_eqp[p, s, m] = 0.0
+
+    def _is_available(self, p: int, s: int, m: int) -> bool:
+        return bool(self.avail_matrix[p, s, m])
+
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.current_step = 0
@@ -77,6 +110,7 @@ class SchedulerEnv(gym.Env):
         self.active_eqp = np.zeros((self.num_prods, self.num_procs, self.num_models))
         self.target_eqp = np.zeros((self.num_prods, self.num_procs, self.num_models))
         self.st_matrix = np.zeros((self.num_prods, self.num_procs, self.num_models))
+        self.avail_matrix = np.ones((self.num_prods, self.num_procs, self.num_models), dtype=bool)
         
         self.prod_idx = {p: i for i, p in enumerate(self.products)}
         self.proc_idx = {p: i for i, p in enumerate(self.processes)}
@@ -105,6 +139,9 @@ class SchedulerEnv(gym.Env):
                     uph = float(row['UPH'])
                     if uph > 0:
                         self.st_matrix[self.prod_idx[p], self.proc_idx[s], self.model_idx[m]] = 60.0 / uph
+
+        self._load_avail_matrix()
+        self._apply_avail_to_st_matrix()
                         
         # Initialize active equipment from DB
         batch_df = self.data.get('batch_tool_info', pd.DataFrame())
@@ -136,6 +173,7 @@ class SchedulerEnv(gym.Env):
                             
         # IDLE equipment is 0 initially (all eqp is assigned in the DB)
         self.idle_eqp = np.zeros(self.num_models)
+        self._relocate_eqp_from_unavailable_slots()
         self.production_logs = []
         return self._get_obs(), {}
 
@@ -179,8 +217,8 @@ class SchedulerEnv(gym.Env):
             t_proc = rem // self.num_models
             t_model = rem % self.num_models
             
-            # Check if this assignment is feasible
-            if self.st_matrix[t_prod, t_proc, t_model] > 0:
+            # UPH>0 이고 AVAIL_YN='Y'인 경우만 배치 가능
+            if self._is_available(t_prod, t_proc, t_model) and self.st_matrix[t_prod, t_proc, t_model] > 0:
                 moved = False
                 # Try pulling from IDLE first
                 if self.idle_eqp[t_model] > 0:
@@ -236,6 +274,8 @@ class SchedulerEnv(gym.Env):
                 transition_count = np.sum(self.target_eqp[p, s, :])
                 
                 for m in range(self.num_models):
+                    if not self._is_available(p, s, m):
+                        continue
                     st_val = self.st_matrix[p, s, m]
                     if st_val > 0.0:
                         capacity += (60.0 / st_val) * self.active_eqp[p, s, m]
