@@ -178,6 +178,23 @@ class SchedulerEnv(gym.Env):
     def _current_unit_attr(self, unit: EquipmentUnit) -> str:
         return unit.plan_prod_attr_val or "IDLE"
 
+    def _renumber_assignment_history(self, unit: EquipmentUnit):
+        for idx, seg in enumerate(unit.assignment_history, start=1):
+            seg.seq_no = idx
+
+    def _close_ephemeral_idle_before_conv(self, unit: EquipmentUnit, new_attr: str):
+        """슬롯 이탈 직후 같은 step에 생기는 IDLE→CONV 중 IDLE 행 제거."""
+        if new_attr != "CONV" or not unit.assignment_history:
+            return
+        prev = unit.assignment_history[-1]
+        if (
+            prev.plan_prod_attr_val == "IDLE"
+            and prev.start_step == self.current_step
+            and (prev.end_step is None or prev.end_step == self.current_step)
+        ):
+            unit.assignment_history.pop()
+            self._renumber_assignment_history(unit)
+
     def _sync_unit_assignment_log(self, unit: EquipmentUnit):
         """장비별 할당 상태 변경 시 SEQ_NO(1부터) 이력 기록."""
         attr = self._current_unit_attr(unit)
@@ -185,13 +202,18 @@ class SchedulerEnv(gym.Env):
             return
         if unit.assignment_history:
             unit.assignment_history[-1].end_step = self.current_step
+        self._close_ephemeral_idle_before_conv(unit, attr)
         unit._logged_attr = attr
+        end_step = None
+        if attr == "CONV":
+            end_step = self.current_step + 1
         unit.assignment_history.append(
             AssignmentSegment(
                 seq_no=len(unit.assignment_history) + 1,
                 plan_prod_attr_val=attr,
                 batch_id=unit.batch_id,
                 start_step=self.current_step,
+                end_step=end_step,
             )
         )
 
@@ -202,11 +224,13 @@ class SchedulerEnv(gym.Env):
         if unit.assignment_history:
             unit.assignment_history[-1].produced_qty += qty
 
-    def _clear_unit_location(self, unit: EquipmentUnit):
+    def _clear_unit_location(self, unit: EquipmentUnit, log_assignment: bool = False):
+        """슬롯에서 빼기만 할 때는 IDLE 로그 생략(CONV·pending 이동 직전)."""
         unit.batch_id = None
         unit.plan_prod_key = None
         unit.oper_id = None
-        self._sync_unit_assignment_log(unit)
+        if log_assignment:
+            self._sync_unit_assignment_log(unit)
 
     def _assign_unit_to_slot(self, unit: EquipmentUnit, p: int, s: int, batch_id: Optional[str]):
         m = self.model_idx[unit.eqp_model_cd]
@@ -229,13 +253,13 @@ class SchedulerEnv(gym.Env):
         if not units:
             return None
         unit = units.pop()
-        self._clear_unit_location(unit)
+        self._clear_unit_location(unit, log_assignment=False)
         return unit
 
     def _return_unit_to_idle(self, unit: EquipmentUnit):
         if unit.is_in_conv():
             return
-        self._clear_unit_location(unit)
+        self._clear_unit_location(unit, log_assignment=True)
         self.idle_equipment.setdefault(unit.eqp_model_cd, []).append(unit)
 
     def _release_conv_units(self, force: bool = False):
@@ -261,8 +285,9 @@ class SchedulerEnv(gym.Env):
         t_proc: int,
         to_batch: Optional[str],
     ):
-        """이동 직후 1 slot 비가용(CONV) — 다음 step부터 목적지 가동."""
+        """이동 직후 1 slot 비가용(CONV) — 해당 step 1시간만 기록, 다음 step 배치."""
         unit.conv_remaining_steps = 1
+        unit._logged_attr = None
         self._sync_unit_assignment_log(unit)
         self.conv_queue.append(
             ConvJob(
