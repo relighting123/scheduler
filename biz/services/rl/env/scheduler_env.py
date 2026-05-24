@@ -2,9 +2,31 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import pandas as pd
-from typing import Dict
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 import os
+
+
+@dataclass
+class EquipmentUnit:
+    """모델 풀 기반 개별 설비. EQP_ID는 생성 후 변경하지 않는다."""
+    eqp_id: str
+    eqp_model_cd: str
+    batch_id: Optional[str] = None
+    plan_prod_key: Optional[str] = None
+    oper_id: Optional[str] = None
+    produced_qty: float = 0.0
+
+    def is_idle(self) -> bool:
+        return self.plan_prod_key is None
+
+    @property
+    def plan_prod_attr_val(self) -> Optional[str]:
+        if self.plan_prod_key and self.oper_id:
+            return f"{self.plan_prod_key}|{self.oper_id}"
+        return None
+
 
 class SchedulerEnv(gym.Env):
     metadata = {"render_modes": ["human"]}
@@ -89,12 +111,121 @@ class SchedulerEnv(gym.Env):
         for p in range(self.num_prods):
             for s in range(self.num_procs):
                 for m in range(self.num_models):
-                    if not self.avail_matrix[p, s, m] and self.active_eqp[p, s, m] > 0:
-                        self.idle_eqp[m] += self.active_eqp[p, s, m]
-                        self.active_eqp[p, s, m] = 0.0
+                    if not self.avail_matrix[p, s, m]:
+                        key = self._slot_key(p, s, m)
+                        units = self.slot_equipment.pop(key, [])
+                        for unit in units:
+                            self._return_unit_to_idle(unit)
+        self._sync_active_eqp_counts()
 
     def _is_available(self, p: int, s: int, m: int) -> bool:
         return bool(self.avail_matrix[p, s, m])
+
+    def _slot_key(self, p: int, s: int, m: int) -> Tuple[int, int, int]:
+        return (p, s, m)
+
+    def _clear_unit_location(self, unit: EquipmentUnit):
+        unit.batch_id = None
+        unit.plan_prod_key = None
+        unit.oper_id = None
+
+    def _assign_unit_to_slot(self, unit: EquipmentUnit, p: int, s: int, batch_id: Optional[str]):
+        m = self.model_idx[unit.eqp_model_cd]
+        key = self._slot_key(p, s, m)
+        self.slot_equipment.setdefault(key, []).append(unit)
+        unit.batch_id = batch_id
+        unit.plan_prod_key = self.products[p]
+        unit.oper_id = self.processes[s]
+
+    def _take_one_from_idle(self, m: int) -> Optional[EquipmentUnit]:
+        model = self.models[m]
+        if not self.idle_equipment.get(model):
+            return None
+        return self.idle_equipment[model].pop()
+
+    def _take_one_from_slot(self, p: int, s: int, m: int) -> Optional[EquipmentUnit]:
+        key = self._slot_key(p, s, m)
+        units = self.slot_equipment.get(key, [])
+        if not units:
+            return None
+        unit = units.pop()
+        self._clear_unit_location(unit)
+        return unit
+
+    def _return_unit_to_idle(self, unit: EquipmentUnit):
+        self._clear_unit_location(unit)
+        self.idle_equipment.setdefault(unit.eqp_model_cd, []).append(unit)
+
+    def _sync_active_eqp_counts(self):
+        self.active_eqp.fill(0)
+        for (p, s, m), units in self.slot_equipment.items():
+            self.active_eqp[p, s, m] = float(len(units))
+        for m_idx, model in enumerate(self.models):
+            self.idle_eqp[m_idx] = float(len(self.idle_equipment.get(model, [])))
+
+    def _build_equipment_pool(self):
+        """EQP_QTY_INFO 합계 기준 모델별 설비 풀 생성 (EQP_ID = {MODEL}-{00001})."""
+        eqp_qty_df = self.data.get('eqp_qty_info', pd.DataFrame())
+        model_totals = {model: 0 for model in self.models}
+
+        if not eqp_qty_df.empty and 'EQP_MODEL_CD' in eqp_qty_df.columns:
+            grouped = eqp_qty_df.groupby('EQP_MODEL_CD')['EQP_QTY'].sum()
+            for model in self.models:
+                if model in grouped.index:
+                    model_totals[model] = int(grouped[model])
+
+        for m_idx, model in enumerate(self.models):
+            assigned = int(round(float(np.sum(self.active_eqp[:, :, m_idx]))))
+            model_totals[model] = max(model_totals.get(model, 0), assigned)
+
+        self.equipment_units: List[EquipmentUnit] = []
+        self.idle_equipment: Dict[str, List[EquipmentUnit]] = {model: [] for model in self.models}
+        self.slot_equipment: Dict[Tuple[int, int, int], List[EquipmentUnit]] = {}
+        self.pending_unit_moves: List[Tuple[int, int, int, EquipmentUnit]] = []
+
+        model_counters = {model: 0 for model in self.models}
+        for model in self.models:
+            total = model_totals.get(model, 0)
+            for _ in range(total):
+                model_counters[model] += 1
+                unit = EquipmentUnit(
+                    eqp_id=f"{model}-{model_counters[model]:05d}",
+                    eqp_model_cd=model,
+                )
+                self.equipment_units.append(unit)
+                self.idle_equipment[model].append(unit)
+
+    def _deploy_initial_equipment(self):
+        """초기 active_eqp 대수에 맞춰 IDLE 풀에서 슬롯으로 배치."""
+        for p in range(self.num_prods):
+            for s in range(self.num_procs):
+                prod = self.products[p]
+                oper = self.processes[s]
+                batch_id = self.batch_id_map.get((prod, oper))
+                for m_idx, model in enumerate(self.models):
+                    count = int(round(float(self.active_eqp[p, s, m_idx])))
+                    for _ in range(count):
+                        unit = self._take_one_from_idle(m_idx)
+                        if unit is None:
+                            break
+                        self._assign_unit_to_slot(unit, p, s, batch_id)
+        self._sync_active_eqp_counts()
+
+    def _resolve_pending_unit_moves(self):
+        for t_prod, t_proc, t_model, unit in self.pending_unit_moves:
+            batch_id = self.batch_id_map.get(
+                (self.products[t_prod], self.processes[t_proc])
+            )
+            self._assign_unit_to_slot(unit, t_prod, t_proc, batch_id)
+        self.pending_unit_moves = []
+        self._sync_active_eqp_counts()
+
+    def get_deployed_equipment_units(self) -> List[EquipmentUnit]:
+        """현재 슬롯에 배치된(비-IDLE) 설비 목록."""
+        deployed = []
+        for units in self.slot_equipment.values():
+            deployed.extend(units)
+        return deployed
 
 
     def reset(self, seed=None, options=None):
@@ -109,6 +240,7 @@ class SchedulerEnv(gym.Env):
 
         self.active_eqp = np.zeros((self.num_prods, self.num_procs, self.num_models))
         self.target_eqp = np.zeros((self.num_prods, self.num_procs, self.num_models))
+        self.idle_eqp = np.zeros(self.num_models)
         self.st_matrix = np.zeros((self.num_prods, self.num_procs, self.num_models))
         self.avail_matrix = np.ones((self.num_prods, self.num_procs, self.num_models), dtype=bool)
         
@@ -170,9 +302,9 @@ class SchedulerEnv(gym.Env):
                     for m in range(self.num_models):
                         if self.st_matrix[p, s, m] > 0:
                             self.active_eqp[p, s, m] = 1.0
-                            
-        # IDLE equipment is 0 initially (all eqp is assigned in the DB)
-        self.idle_eqp = np.zeros(self.num_models)
+
+        self._build_equipment_pool()
+        self._deploy_initial_equipment()
         self._relocate_eqp_from_unavailable_slots()
         self.production_logs = []
         return self._get_obs(), {}
@@ -220,22 +352,28 @@ class SchedulerEnv(gym.Env):
             # UPH>0 이고 AVAIL_YN='Y'인 경우만 배치 가능
             if self._is_available(t_prod, t_proc, t_model) and self.st_matrix[t_prod, t_proc, t_model] > 0:
                 moved = False
+                to_batch = self.batch_id_map.get(
+                    (self.products[t_prod], self.processes[t_proc])
+                )
                 # Try pulling from IDLE first
-                if self.idle_eqp[t_model] > 0:
-                    self.idle_eqp[t_model] -= 1
+                unit = self._take_one_from_idle(t_model)
+                if unit is not None:
                     self.target_eqp[t_prod, t_proc, t_model] += 1
+                    self.pending_unit_moves.append((t_prod, t_proc, t_model, unit))
                     moved = True
+                    self._sync_active_eqp_counts()
                     transfers.append({
-                        'FROM_PROD': 'IDLE', 'FROM_PROC': 'IDLE',
+                        'FROM_PROD': 'IDLE', 'FROM_PROC': 'IDLE', 'FROM_BATCH': None,
                         'TO_PROD': self.products[t_prod], 'TO_PROC': self.processes[t_proc],
-                        'MODEL': self.models[t_model]
+                        'TO_BATCH': to_batch,
+                        'MODEL': self.models[t_model], 'EQP_ID': unit.eqp_id,
                     })
-                    
+
                 # If no IDLE, pull from another active node (Priority-based: pull from least needed node first)
                 if not moved:
                     best_src_p, best_src_s = None, None
                     min_priority = float('inf')
-                    
+
                     for p in range(self.num_prods):
                         for s in range(self.num_procs):
                             if self.active_eqp[p, s, t_model] > 0 and (p != t_prod or s != t_proc):
@@ -243,66 +381,82 @@ class SchedulerEnv(gym.Env):
                                 st_val = self.st_matrix[p, s, t_model]
                                 if st_val > 0.0:
                                     uph = 60.0 / st_val
-                                    
-                                # Priority: Lower priority means the equipment is less needed here.
-                                # If UPH is 0, this equipment model cannot process this product at all, so priority is -1.0 (highest priority to pull).
+
                                 if uph == 0.0:
                                     priority = -1.0
                                 else:
                                     priority = self.wip[p, s] / uph
-                                    
+
                                 if priority < min_priority:
                                     min_priority = priority
                                     best_src_p, best_src_s = p, s
-                                    
+
                     if best_src_p is not None:
-                        self.active_eqp[best_src_p, best_src_s, t_model] -= 1
-                        self.target_eqp[t_prod, t_proc, t_model] += 1
-                        moved = True
-                        transfers.append({
-                            'FROM_PROD': self.products[best_src_p], 'FROM_PROC': self.processes[best_src_s],
-                            'TO_PROD': self.products[t_prod], 'TO_PROC': self.processes[t_proc],
-                            'MODEL': self.models[t_model]
-                        })
-                    
+                        src_key = self._slot_key(best_src_p, best_src_s, t_model)
+                        src_units = self.slot_equipment.get(src_key, [])
+                        from_batch = src_units[-1].batch_id if src_units else None
+                        unit = self._take_one_from_slot(best_src_p, best_src_s, t_model)
+                        if unit is not None:
+                            self.target_eqp[t_prod, t_proc, t_model] += 1
+                            self.pending_unit_moves.append((t_prod, t_proc, t_model, unit))
+                            moved = True
+                            self._sync_active_eqp_counts()
+                            transfers.append({
+                                'FROM_PROD': self.products[best_src_p],
+                                'FROM_PROC': self.processes[best_src_s],
+                                'FROM_BATCH': from_batch,
+                                'TO_PROD': self.products[t_prod],
+                                'TO_PROC': self.processes[t_proc],
+                                'TO_BATCH': to_batch,
+                                'MODEL': self.models[t_model],
+                                'EQP_ID': unit.eqp_id,
+                            })
+
         # Simulate production
         step_production = 0.0
         for p in range(self.num_prods):
             for s in range(self.num_procs):
                 capacity = 0.0
-                active_count = np.sum(self.active_eqp[p, s, :])
-                transition_count = np.sum(self.target_eqp[p, s, :])
-                
+                unit_contributions = []
+
                 for m in range(self.num_models):
                     if not self._is_available(p, s, m):
                         continue
                     st_val = self.st_matrix[p, s, m]
                     if st_val > 0.0:
-                        capacity += (60.0 / st_val) * self.active_eqp[p, s, m]
-                
+                        per_unit_cap = 60.0 / st_val
+                        slot_units = self.slot_equipment.get(self._slot_key(p, s, m), [])
+                        for unit in slot_units:
+                            unit_contributions.append((unit, per_unit_cap))
+                            capacity += per_unit_cap
+
+                active_count = np.sum(self.active_eqp[p, s, :])
+                transition_count = np.sum(self.target_eqp[p, s, :])
                 actual_produce = min(capacity, self.wip[p, s])
-                
-                # 가동률 (Utilization Rate)
+
                 utilization = (actual_produce / capacity * 100.0) if capacity > 0 else 0.0
-                
-                # 가동/유휴 시간 누적 (장비 대수 * 시간)
                 self.total_eqp_hours[p, s] += active_count * 1.0
-                self.operating_eqp_hours[p, s] += (actual_produce / capacity * active_count * 1.0) if capacity > 0 else 0.0
-                
+                self.operating_eqp_hours[p, s] += (
+                    actual_produce / capacity * active_count * 1.0
+                ) if capacity > 0 else 0.0
+
+                if unit_contributions:
+                    total_unit_cap = sum(cap for _, cap in unit_contributions)
+                    for unit, unit_cap in unit_contributions:
+                        share = actual_produce * (unit_cap / total_unit_cap) if total_unit_cap > 0 else 0.0
+                        unit.produced_qty += share
+
                 self.produced[p, s] += actual_produce
                 step_production += actual_produce
                 self.wip[p, s] -= actual_produce
                 if s < self.num_procs - 1:
                     self.wip[p, s+1] += actual_produce
-                    
-                # 계획 달성률
+
                 plan_qty = self.plan[p, s]
                 cum_produced = self.produced[p, s]
                 achievement_rate = (cum_produced / plan_qty * 100.0) if plan_qty > 0 else 0.0
-                
-                # BATCH_ID 매핑 (배치 정보가 없으면 N/A)
                 batch_id = self.batch_id_map.get((self.products[p], self.processes[s]), 'N/A')
-                    
+
                 if plan_qty > 0 or actual_produce > 0 or active_count > 0:
                     self.production_logs.append({
                         'TIME_SLOT': self.current_step,
@@ -318,9 +472,8 @@ class SchedulerEnv(gym.Env):
                         'PLAN_QTY': plan_qty,
                         'ACHIEVEMENT_RATE(%)': round(achievement_rate, 2)
                     })
-                    
-        # Resolve target eqp instantly for this mock
-        self.active_eqp += self.target_eqp
+
+        self._resolve_pending_unit_moves()
         self.target_eqp.fill(0)
         
         self.current_step += 1

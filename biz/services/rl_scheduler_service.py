@@ -149,25 +149,178 @@ class RLSchedulerService:
             )
         """)
 
+    def _create_output_tables(self):
+        """추론(Output) 테이블 생성."""
+        self.db.execute("""
+            CREATE TABLE RTD_CONV_INF (
+                RULE_TIMEKEY VARCHAR2(20),
+                FROM_BATCH VARCHAR2(50),
+                FROM_PLAN_PROD_KEY VARCHAR2(50),
+                FROM_OPER_ID VARCHAR2(50),
+                EQP_MODEL_CD VARCHAR2(50),
+                TO_BATCH_ID VARCHAR2(50),
+                TO_PLAN_PROD_KEY VARCHAR2(50),
+                TO_OPER_ID VARCHAR2(50),
+                START_CONV_TIME VARCHAR2(20),
+                EQP_QTY NUMBER
+            )
+        """)
+        self.db.execute("""
+            CREATE TABLE RTS_RSLT_MAS (
+                RULE_TIMEKEY VARCHAR2(50) NOT NULL,
+                EQP_ID VARCHAR2(50) NOT NULL,
+                EQP_MODEL_CD VARCHAR2(50),
+                BATCH_ID VARCHAR2(50),
+                START_TM VARCHAR2(14),
+                END_TM VARCHAR2(14),
+                PLAN_PROD_ATTR_VAL VARCHAR2(200),
+                PROD_QTY VARCHAR2(50),
+                CUM_PROD_QTY VARCHAR2(50),
+                CRT_USET_ID VARCHAR2(50),
+                CRT_TM VARCHAR2(14),
+                CONSTRAINT PK_RTS_RSLT_MAS PRIMARY KEY (RULE_TIMEKEY, EQP_ID)
+            )
+        """)
+
+    def _format_timekey_14(self, time_value):
+        """PLAN 시간값을 YYYYMMDDHHMMSS(14자리)로 정규화."""
+        return str(time_value).strip().ljust(14, '0')[:14]
+
+    def _resolve_simulation_time_range(self, data):
+        """시뮬레이션 구간 START_TM / END_TM (PLAN_INFO 기준)."""
+        plan_df = data.get('plan_info', pd.DataFrame())
+        if plan_df.empty or not {'START_TIME', 'END_TIME'}.issubset(plan_df.columns):
+            now = datetime.now().strftime("%Y%m%d%H%M%S")
+            return now, now
+        start_tm = self._format_timekey_14(plan_df['START_TIME'].astype(str).min())
+        end_tm = self._format_timekey_14(plan_df['END_TIME'].astype(str).max())
+        return start_tm, end_tm
+
+    def _build_rts_rslt_mas_rows(self, env, data, rule_timekey, crt_user_id='SYSTEM'):
+        """시뮬레이션 최종 상태를 RTS_RSLT_MAS Output 행으로 변환 (설비 풀 기반 EQP_ID)."""
+        start_tm, end_tm = self._resolve_simulation_time_range(data)
+        crt_tm = datetime.now().strftime("%Y%m%d%H%M%S")
+        rows = []
+
+        deployed_units = env.get_deployed_equipment_units() if hasattr(env, 'get_deployed_equipment_units') else []
+        if deployed_units:
+            for unit in deployed_units:
+                prod_qty_str = str(round(float(unit.produced_qty), 4))
+                rows.append({
+                    'RULE_TIMEKEY': str(rule_timekey),
+                    'EQP_ID': unit.eqp_id,
+                    'EQP_MODEL_CD': unit.eqp_model_cd,
+                    'BATCH_ID': unit.batch_id,
+                    'START_TM': start_tm,
+                    'END_TM': end_tm,
+                    'PLAN_PROD_ATTR_VAL': unit.plan_prod_attr_val or '',
+                    'PROD_QTY': prod_qty_str,
+                    'CUM_PROD_QTY': prod_qty_str,
+                    'CRT_USET_ID': crt_user_id,
+                    'CRT_TM': crt_tm,
+                })
+            return rows
+
+        # fallback: equipment registry 미사용 환경
+        for p_idx, prod in enumerate(env.products):
+            if prod.startswith("PAD_PROD_"):
+                continue
+            for s_idx, oper in enumerate(env.processes):
+                if oper.startswith("PAD_PROC_"):
+                    continue
+                batch_id = env.batch_id_map.get((prod, oper), 'EQP')
+                produced_qty = float(env.produced[p_idx, s_idx])
+                for m_idx, model in enumerate(env.models):
+                    eqp_count = int(round(float(env.active_eqp[p_idx, s_idx, m_idx])))
+                    if eqp_count <= 0:
+                        continue
+                    per_eqp_prod = produced_qty / eqp_count if eqp_count > 0 else 0.0
+                    prod_qty_str = str(round(per_eqp_prod, 4))
+                    for seq in range(1, eqp_count + 1):
+                        rows.append({
+                            'RULE_TIMEKEY': str(rule_timekey),
+                            'EQP_ID': f"{model}-{seq:05d}",
+                            'EQP_MODEL_CD': model,
+                            'BATCH_ID': batch_id,
+                            'START_TM': start_tm,
+                            'END_TM': end_tm,
+                            'PLAN_PROD_ATTR_VAL': f"{prod}|{oper}",
+                            'PROD_QTY': prod_qty_str,
+                            'CUM_PROD_QTY': prod_qty_str,
+                            'CRT_USET_ID': crt_user_id,
+                            'CRT_TM': crt_tm,
+                        })
+        return rows
+
+    def save_rts_rslt_mas(self, env, data, rule_timekey, crt_user_id='SYSTEM'):
+        """RTS_RSLT_MAS Output 저장 (동일 RULE_TIMEKEY 삭제 후 INSERT)."""
+        rows = self._build_rts_rslt_mas_rows(env, data, rule_timekey, crt_user_id=crt_user_id)
+        if not rows:
+            print("\n[RTS_RSLT_MAS] 저장할 결과가 없습니다.")
+            return rows
+
+        df = pd.DataFrame(rows)
+        print(f"\n[RTS_RSLT_MAS] 총 {len(df)}건 Output")
+        print("-" * 80)
+        print(df.to_string(index=False))
+        print("-" * 80)
+
+        log_dir = os.path.join(os.getcwd(), 'logs', 'simulation_logs')
+        os.makedirs(log_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_timekey = str(rule_timekey).replace(" ", "_")
+        file_path = os.path.join(log_dir, f'rts_rslt_mas_{safe_timekey}_{timestamp}.xlsx')
+        df.to_excel(file_path, index=False)
+        print(f"[성공] RTS_RSLT_MAS Output이 엑셀로 저장되었습니다: {file_path}")
+
+        if self.db is None:
+            return rows
+
+        try:
+            self.db.execute(
+                "DELETE FROM RTS_RSLT_MAS WHERE RULE_TIMEKEY = :tk",
+                {"tk": str(rule_timekey)},
+            )
+            self.db.bulk_execute(
+                """
+                INSERT INTO RTS_RSLT_MAS (
+                    RULE_TIMEKEY, EQP_ID, EQP_MODEL_CD, BATCH_ID, START_TM, END_TM,
+                    PLAN_PROD_ATTR_VAL, PROD_QTY, CUM_PROD_QTY, CRT_USET_ID, CRT_TM
+                ) VALUES (
+                    :RULE_TIMEKEY, :EQP_ID, :EQP_MODEL_CD, :BATCH_ID, :START_TM, :END_TM,
+                    :PLAN_PROD_ATTR_VAL, :PROD_QTY, :CUM_PROD_QTY, :CRT_USET_ID, :CRT_TM
+                )
+                """,
+                rows,
+            )
+            print(f"[성공] RTS_RSLT_MAS {len(rows)}건 DB 저장 완료 (RULE_TIMEKEY={rule_timekey})")
+        except Exception as exc:
+            if 'ORA-00942' in str(exc) or 'table or view does not exist' in str(exc).lower():
+                print("[안내] RTS_RSLT_MAS 테이블이 없어 DB 저장을 건너뜁니다. schema/scheduler_tables.sql을 적용하세요.")
+            else:
+                print(f"[경고] RTS_RSLT_MAS DB 저장 실패: {exc}")
+        return rows
+
     def init_db_scenario(self):
         """휴리스틱 함정(Trap) 시나리오용 DB 초기화 (DROP -> CREATE -> INSERT)"""
         print("\n[DB 설정] DB 시나리오 초기화를 시작합니다 (Heuristic Trap Scenario)...")
         tables = [
-            "WIP_INFO", "UPH_INFO", "EQP_QTY_INFO", "AVAIL_INFO", 
-            "BATCH_TOOL_INFO", "TOOL_QTY_INFO", "PLAN_INFO", "RTD_CONV_INF"
+            "WIP_INFO", "UPH_INFO", "EQP_QTY_INFO", "AVAIL_INFO",
+            "BATCH_TOOL_INFO", "TOOL_QTY_INFO", "PLAN_INFO", "RTD_CONV_INF", "RTS_RSLT_MAS"
         ]
-        
+
         # 1. DROP Tables
         for table in tables:
             try:
                 self.db.execute(f"DROP TABLE {table}")
             except Exception:
                 pass # 테이블이 없으면 무시
-                
+
         # 2. CREATE Tables
         self._create_learning_tables()
+        self._create_output_tables()
         tk = self.DEFAULT_RULE_TIMEKEY
-        
+
         # 3. INSERT Data (Trap Scenario)
         # WIP: OP10 = 5000 (Trap trigger), OP20 = 500
         self.db.execute(f"INSERT INTO WIP_INFO VALUES ('{tk}', 'P1', 'OP10', 10, 5000)")
@@ -199,21 +352,22 @@ class RLSchedulerService:
         """벤치마크 데이터셋(test/data/benchmark_dataset)을 DB에 적재합니다."""
         print("\n[DB 설정] 벤치마크 데이터셋 시나리오 초기화를 시작합니다...")
         tables = [
-            "WIP_INFO", "UPH_INFO", "EQP_QTY_INFO", "AVAIL_INFO", 
-            "BATCH_TOOL_INFO", "TOOL_QTY_INFO", "PLAN_INFO", "RTD_CONV_INF"
+            "WIP_INFO", "UPH_INFO", "EQP_QTY_INFO", "AVAIL_INFO",
+            "BATCH_TOOL_INFO", "TOOL_QTY_INFO", "PLAN_INFO", "RTD_CONV_INF", "RTS_RSLT_MAS"
         ]
-        
+
         # 1. DROP Tables
         for table in tables:
             try:
                 self.db.execute(f"DROP TABLE {table}")
             except Exception:
                 pass # 테이블이 없으면 무시
-                
+
         # 2. CREATE Tables
         self._create_learning_tables()
+        self._create_output_tables()
         tk = self.DEFAULT_RULE_TIMEKEY
-        
+
         # 3. INSERT Data (벤치마크 데이터셋)
         # WIP: 충분한 재공 부여
         wips = [
@@ -821,6 +975,7 @@ class RLSchedulerService:
         allocation_df = self._build_final_allocation_df(env)
         achievement_df = self._build_last_process_achievement_df(env, data)
         self.save_inference_summary(resolved_timekey, allocation_df, achievement_df)
+        self.save_rts_rslt_mas(env, data, resolved_timekey)
 
         return results
 
