@@ -3,7 +3,7 @@ import random
 
 import gymnasium as gym
 
-from biz.services.rl.env.env_schema import compute_canonical_schema
+from biz.services.rl.env.env_schema import build_spaces_from_canonical, compute_canonical_schema
 from biz.services.rl.env.scheduler_env import SchedulerEnv
 
 
@@ -19,9 +19,12 @@ class SnapshotRotationEnv(gym.Env):
         self.canonical_products, self.canonical_processes, self.canonical_models = (
             compute_canonical_schema(snapshots, max_prods=max_prods, max_procs=max_procs)
         )
+        self.observation_space, self.action_space = build_spaces_from_canonical(
+            self.canonical_products,
+            self.canonical_processes,
+            self.canonical_models,
+        )
         self._inner = self._make_inner_env(snapshots[0])
-        self.observation_space = self._inner.observation_space
-        self.action_space = self._inner.action_space
 
     def _make_inner_env(self, data):
         return SchedulerEnv(
@@ -34,8 +37,6 @@ class SnapshotRotationEnv(gym.Env):
     def reset(self, seed=None, options=None):
         data = random.choice(self.snapshots)
         self._inner = self._make_inner_env(data)
-        self.observation_space = self._inner.observation_space
-        self.action_space = self._inner.action_space
         return self._inner.reset(seed=seed, options=options)
 
     def step(self, action):

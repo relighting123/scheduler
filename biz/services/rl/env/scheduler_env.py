@@ -102,6 +102,11 @@ class SchedulerEnv(gym.Env):
             max_prods=self.max_prods,
             max_procs=self.max_procs,
         )
+        if self.fixed_products is None and self.max_prods is not None and self.max_procs is not None:
+            while len(self.products) < self.max_prods:
+                self.products.append(f"PAD_PROD_{len(self.products)}")
+            while len(self.processes) < self.max_procs:
+                self.processes.append(f"PAD_PROC_{len(self.processes)}")
 
     def _needs_tool_conv(
         self,
@@ -407,8 +412,12 @@ class SchedulerEnv(gym.Env):
             wip_norm, active_norm, target_norm, co_norm,
             produced_ratio, st_norm, plan_norm, wip_plan_ratio,
             [1.0], [float(self.current_step) / self.max_steps]
-        ])
-        return obs.astype(np.float32)
+        ]).astype(np.float32)
+        if obs.shape != (self.obs_dim,):
+            raise ValueError(
+                f"관측 벡터 크기 불일치: got {obs.shape}, expected ({self.obs_dim},)"
+            )
+        return obs
 
     def step(self, action):
         transfers = []
