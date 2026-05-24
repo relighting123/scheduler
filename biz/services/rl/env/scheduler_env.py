@@ -27,6 +27,7 @@ class AssignmentSegment:
     plan_prod_attr_val: str
     batch_id: Optional[str] = None
     start_step: int = 0
+    end_step: Optional[int] = None
     produced_qty: float = 0.0
 
 
@@ -182,6 +183,8 @@ class SchedulerEnv(gym.Env):
         attr = self._current_unit_attr(unit)
         if unit._logged_attr == attr:
             return
+        if unit.assignment_history:
+            unit.assignment_history[-1].end_step = self.current_step
         unit._logged_attr = attr
         unit.assignment_history.append(
             AssignmentSegment(
@@ -348,8 +351,16 @@ class SchedulerEnv(gym.Env):
             return []
         return sorted(self.equipment_units, key=lambda u: u.eqp_id)
 
+    def finalize_assignment_history(self):
+        """에피소드 종료 시 마지막 할당 구간의 end_step 확정."""
+        end_step = self.current_step
+        for unit in self.get_all_equipment_units():
+            if unit.assignment_history and unit.assignment_history[-1].end_step is None:
+                unit.assignment_history[-1].end_step = end_step
+
     def iter_rts_assignment_records(self) -> List[Tuple[EquipmentUnit, AssignmentSegment]]:
         """RTS_RSLT_MAS용 (장비, 장비별 SEQ 할당 구간) 목록."""
+        self.finalize_assignment_history()
         records: List[Tuple[EquipmentUnit, AssignmentSegment]] = []
         for unit in self.get_all_equipment_units():
             if not unit.assignment_history:
@@ -639,6 +650,7 @@ class SchedulerEnv(gym.Env):
         terminated = self.current_step >= self.max_steps
         if terminated:
             self._flush_conv_queue()
+            self.finalize_assignment_history()
 
         # Reward calculation (Incremental)
         # 1. 이번 시간(Step)에 생산한 양에 비례한 보상

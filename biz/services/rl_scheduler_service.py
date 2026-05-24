@@ -207,7 +207,7 @@ class RLSchedulerService:
         return str(time_value).strip().ljust(14, '0')[:14]
 
     def _resolve_simulation_time_range(self, data):
-        """시뮬레이션 구간 START_TM / END_TM (PLAN_INFO 기준)."""
+        """시뮬레이션 전체 구간 START_TM / END_TM (PLAN_INFO 기준, fallback용)."""
         plan_df = data.get('plan_info', pd.DataFrame())
         if plan_df.empty or not {'START_TIME', 'END_TIME'}.issubset(plan_df.columns):
             now = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -216,9 +216,48 @@ class RLSchedulerService:
         end_tm = self._format_timekey_14(plan_df['END_TIME'].astype(str).max())
         return start_tm, end_tm
 
+    def _resolve_simulation_base_datetime(self, data, rule_timekey=None):
+        """1 slot = 1시간 시뮬레이션의 기준 시각 (PLAN START_TIME 또는 RULE_TIMEKEY)."""
+        plan_df = data.get('plan_info', pd.DataFrame())
+        if not plan_df.empty and 'START_TIME' in plan_df.columns:
+            base_str = self._format_timekey_14(plan_df['START_TIME'].astype(str).min())
+        elif rule_timekey and str(rule_timekey) not in ('', 'N/A', 'benchmark'):
+            base_str = self._format_timekey_14(rule_timekey)
+        else:
+            base_str = datetime.now().strftime("%Y%m%d%H%M%S")
+
+        if len(base_str) >= 14:
+            return datetime.strptime(base_str[:14], "%Y%m%d%H%M%S")
+        if len(base_str) >= 10:
+            return datetime.strptime(base_str[:10], "%Y%m%d%H")
+        return datetime.strptime(base_str[:8] + "00", "%Y%m%d%H")
+
+    def _step_to_slot_tm(self, base_dt, step_index: int) -> str:
+        """시뮬레이션 step 인덱스 → 해당 시간대 시작 시각 (YYYYMMDDHHMMSS)."""
+        from datetime import timedelta
+
+        slot_dt = base_dt + timedelta(hours=int(step_index))
+        return slot_dt.strftime("%Y%m%d%H%M%S")
+
+    def _segment_slot_time_range(self, data, seg, max_steps: int, rule_timekey=None):
+        """할당 구간의 START_TM(시작 step) / END_TM(종료 step) — 17시 CONV → END 18시."""
+        base_dt = self._resolve_simulation_base_datetime(data, rule_timekey=rule_timekey)
+        start_step = int(seg.start_step)
+        end_step = seg.end_step
+        if end_step is None:
+            end_step = min(start_step + 1, max_steps)
+        else:
+            end_step = int(end_step)
+        if end_step <= start_step:
+            end_step = start_step + 1
+        start_tm = self._step_to_slot_tm(base_dt, start_step)
+        end_tm = self._step_to_slot_tm(base_dt, end_step)
+        return start_tm, end_tm
+
     def _build_rts_rslt_mas_rows(self, env, data, rule_timekey, crt_user_id='SYSTEM'):
         """시뮬레이션 최종 상태를 RTS_RSLT_MAS Output 행으로 변환 (설비 풀 기반 EQP_ID)."""
-        start_tm, end_tm = self._resolve_simulation_time_range(data)
+        fallback_start, fallback_end = self._resolve_simulation_time_range(data)
+        max_steps = int(getattr(env, 'max_steps', 24))
         crt_tm = datetime.now().strftime("%Y%m%d%H%M%S")
         rows = []
 
@@ -231,6 +270,9 @@ class RLSchedulerService:
         if hasattr(env, "iter_rts_assignment_records"):
             records = env.iter_rts_assignment_records()
             for unit, seg in records:
+                seg_start, seg_end = self._segment_slot_time_range(
+                    data, seg, max_steps, rule_timekey=rule_timekey
+                )
                 prod_qty_str = str(round(float(seg.produced_qty), 4))
                 cum_qty_str = str(round(float(unit.produced_qty), 4))
                 rows.append({
@@ -239,8 +281,8 @@ class RLSchedulerService:
                     'EQP_ID': unit.eqp_id,
                     'EQP_MODEL_CD': unit.eqp_model_cd,
                     'BATCH_ID': seg.batch_id,
-                    'START_TM': start_tm,
-                    'END_TM': end_tm,
+                    'START_TM': seg_start,
+                    'END_TM': seg_end,
                     'PLAN_PROD_ATTR_VAL': seg.plan_prod_attr_val,
                     'PROD_QTY': prod_qty_str,
                     'CUM_PROD_QTY': cum_qty_str,
@@ -258,8 +300,14 @@ class RLSchedulerService:
                     'EQP_ID': unit.eqp_id,
                     'EQP_MODEL_CD': unit.eqp_model_cd,
                     'BATCH_ID': unit.batch_id,
-                    'START_TM': start_tm,
-                    'END_TM': end_tm,
+                    'START_TM': self._step_to_slot_tm(
+                        self._resolve_simulation_base_datetime(data, rule_timekey),
+                        0,
+                    ),
+                    'END_TM': self._step_to_slot_tm(
+                        self._resolve_simulation_base_datetime(data, rule_timekey),
+                        max_steps,
+                    ),
                     'PLAN_PROD_ATTR_VAL': unit.plan_prod_attr_val or '',
                     'PROD_QTY': prod_qty_str,
                     'CUM_PROD_QTY': prod_qty_str,
@@ -290,8 +338,8 @@ class RLSchedulerService:
                             'EQP_ID': f"{model}-{eqp_seq:05d}",
                             'EQP_MODEL_CD': model,
                             'BATCH_ID': batch_id,
-                            'START_TM': start_tm,
-                            'END_TM': end_tm,
+                            'START_TM': fallback_start,
+                            'END_TM': fallback_end,
                             'PLAN_PROD_ATTR_VAL': f"{prod}|{oper}",
                             'PROD_QTY': prod_qty_str,
                             'CUM_PROD_QTY': prod_qty_str,

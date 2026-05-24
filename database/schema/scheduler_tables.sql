@@ -109,8 +109,8 @@ COMMENT ON COLUMN RTS_RSLT_MAS.SEQ_NO                   IS '장비별 제품·�
 COMMENT ON COLUMN RTS_RSLT_MAS.EQP_ID                  IS '설비 ID (모델 풀 기준 고정)';
 COMMENT ON COLUMN RTS_RSLT_MAS.EQP_MODEL_CD            IS '설비 모델 코드';
 COMMENT ON COLUMN RTS_RSLT_MAS.BATCH_ID                IS '현재 배치 ID (Tool 교체 단위)';
-COMMENT ON COLUMN RTS_RSLT_MAS.START_TM                IS '시작 시간 (YYYYMMDDHHMMSS)';
-COMMENT ON COLUMN RTS_RSLT_MAS.END_TM                  IS '종료 시간 (YYYYMMDDHHMMSS)';
+COMMENT ON COLUMN RTS_RSLT_MAS.START_TM                IS '할당 구간 시작 시각 (시뮬 slot, YYYYMMDDHHMMSS)';
+COMMENT ON COLUMN RTS_RSLT_MAS.END_TM                  IS '할당 구간 종료 시각 (다음 slot 시작, 예: 17시 CONV→18시)';
 COMMENT ON COLUMN RTS_RSLT_MAS.PLAN_PROD_ATTR_VAL      IS '계획 생산 속성 값';
 COMMENT ON COLUMN RTS_RSLT_MAS.PROD_QTY                IS '생산 수량';
 COMMENT ON COLUMN RTS_RSLT_MAS.CUM_PROD_QTY            IS '누적 생산 수량';
