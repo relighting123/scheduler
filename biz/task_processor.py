@@ -2,6 +2,7 @@ import os
 import logging
 from core.repository import BaseRepository
 from biz.services import common_service
+from biz.services.rl.benchmark_scenarios import DEFAULT_BENCHMARK_SCENARIO
 from biz.services.rl_scheduler_service import RLSchedulerService
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,11 @@ class TaskProcessor:
                 rule_timekey if rule_timekey not in ("N/A", "") else None
             )
             run_test = params.get("run_test_eval", True)
-            benchmark_dataset = params.get("benchmark_dataset", "benchmark_dataset")
+            benchmark_dataset = (
+                params.get("benchmark_dataset")
+                or params.get("scenario")
+                or DEFAULT_BENCHMARK_SCENARIO
+            )
             rl_service.train_model(
                 total_timesteps=timesteps,
                 rule_timekey=single_tk,

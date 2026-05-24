@@ -12,6 +12,9 @@ from stable_baselines3.common.monitor import Monitor
 from biz.services.rl.callbacks import PlottingCallback
 from biz.services.rl.env.scheduler_env import SchedulerEnv
 from biz.services.rl.env.snapshot_rotation_env import SnapshotRotationEnv
+from biz.services.rl.benchmark_scenarios import DEFAULT_BENCHMARK_SCENARIO, resolve_scenario_id
+
+
 class RLSchedulerService:
     # 학습(Input) 데이터 스냅샷 식별자 (YYYYMMDDHHMMSS)
     DEFAULT_RULE_TIMEKEY = '20251020070000'
@@ -445,7 +448,7 @@ class RLSchedulerService:
         print("[성공] DB 시나리오 초기화가 완료되었습니다 (WIP_INFO 등 7개 테이블).")
 
     def init_benchmark_dataset_scenario(self):
-        """벤치마크 데이터셋(test/data/benchmark_dataset)을 DB에 적재합니다."""
+        """벤치마크 표준 시나리오(bench_01_multiproduct)와 동일한 데이터를 DB에 적재합니다."""
         print("\n[DB 설정] 벤치마크 데이터셋 시나리오 초기화를 시작합니다...")
         tables = [
             "WIP_INFO", "UPH_INFO", "EQP_QTY_INFO", "AVAIL_INFO",
@@ -744,21 +747,23 @@ class RLSchedulerService:
 
     def evaluate_on_benchmark_dataset(
         self,
-        benchmark_dataset='benchmark_dataset',
+        benchmark_dataset=DEFAULT_BENCHMARK_SCENARIO,
         model_path='scheduler_ppo_model',
         max_steps=24,
     ):
-        """test/data 벤치마크 데이터셋으로 학습 모델·휴리스틱·정답(Optimal) 성능 비교."""
+        """test/data 벤치마크 시나리오로 학습 모델·휴리스틱·정답(Optimal) 성능 비교."""
         from biz.services.rl.test_data_loader import TestDataLoader
         from biz.services.rl.expert import HeuristicExpert, OptimalExpert
 
+        scenario_id = resolve_scenario_id(benchmark_dataset)
+
         print("\n" + "=" * 80)
-        print(f" [벤치마크 데이터셋 성능 비교 — dataset: {benchmark_dataset}]")
+        print(f" [벤치마크 시나리오 성능 비교 — scenario: {scenario_id}]")
         print("=" * 80)
 
         loader = TestDataLoader()
-        data = loader.load_for_env(benchmark_dataset)
-        ground_truth = loader.load_ground_truth(benchmark_dataset)
+        data = loader.load_for_env(scenario_id)
+        ground_truth = loader.load_ground_truth(scenario_id)
 
         target_alloc = ground_truth.get('target_allocation')
 
@@ -820,7 +825,7 @@ class RLSchedulerService:
         os.makedirs(log_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         report_path = os.path.join(
-            log_dir, f'benchmark_dataset_eval_{benchmark_dataset}_{timestamp}.xlsx'
+            log_dir, f'bench_eval_{scenario_id}_{timestamp}.xlsx'
         )
         with pd.ExcelWriter(report_path) as writer:
             comparison_df.to_excel(writer, sheet_name='COMPARISON', index=False)
@@ -833,7 +838,7 @@ class RLSchedulerService:
             rule_timekey=ground_truth.get('rule_timekey', 'test'),
             allocation_df=rl_allocation_df,
             achievement_df=rl_achievement_df,
-            file_prefix=f'benchmark_inference_{benchmark_dataset}',
+            file_prefix=f'bench_inference_{scenario_id}',
         )
 
         return comparison_df
@@ -852,9 +857,9 @@ class RLSchedulerService:
         from_rule_timekey=None,
         to_rule_timekey=None,
         run_test_eval=True,
-        benchmark_dataset='benchmark_dataset',
+        benchmark_dataset=DEFAULT_BENCHMARK_SCENARIO,
     ):
-        """RULE_TIMEKEY 구간(from~to) 또는 단일 키로 학습 후 벤치마크 데이터셋 성능 비교."""
+        """RULE_TIMEKEY 구간(from~to) 또는 단일 키로 학습 후 벤치마크 시나리오 성능 비교."""
         snapshots = self.fetch_training_snapshots(
             from_rule_timekey=from_rule_timekey,
             to_rule_timekey=to_rule_timekey,

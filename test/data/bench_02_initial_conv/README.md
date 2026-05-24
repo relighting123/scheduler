@@ -1,4 +1,4 @@
-# 벤치마크: 초기 장비 전환 필수 (`benchmark_initial_conv`)
+# 벤치마크: 초기 장비 전환 필수 (`bench_02_initial_conv`)
 
 조합 최적화형 난이도 검증용 시나리오입니다. **초기 배치가 의도적으로 잘못**되어 있어, 초기 구간에 장비 재배치를 하지 않으면 계획 달성이 크게 떨어집니다. 정답 배치로 맞춘 뒤 유지하면 고달성이 나와야 “잘 푼 것”과 “그냥 둔 것”을 구분할 수 있습니다.
 
@@ -22,12 +22,14 @@
 
 ```python
 from biz.services.rl.test_data_loader import TestDataLoader
-data = TestDataLoader().load_for_env("benchmark_initial_conv")
+data = TestDataLoader().load_for_env("bench_02_initial_conv")
 ```
 
 ## CLI
 
 ```bash
-python run.py train --benchmark-dataset benchmark_initial_conv
-python test_benchmark_initial_conv.py
+python run.py train --benchmark-dataset bench_02_initial_conv
+python test_bench_02_initial_conv.py
 ```
+
+시나리오 ID: `bench_02_initial_conv` (구 `benchmark_initial_conv`)
