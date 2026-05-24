@@ -170,6 +170,7 @@ class RLSchedulerService:
                 RULE_TIMEKEY VARCHAR2(50) NOT NULL,
                 EQP_ID VARCHAR2(50) NOT NULL,
                 EQP_MODEL_CD VARCHAR2(50),
+                BATCH_ID VARCHAR2(50),
                 START_TM VARCHAR2(14),
                 END_TM VARCHAR2(14),
                 PLAN_PROD_ATTR_VAL VARCHAR2(200),
@@ -196,34 +197,51 @@ class RLSchedulerService:
         return start_tm, end_tm
 
     def _build_rts_rslt_mas_rows(self, env, data, rule_timekey, crt_user_id='SYSTEM'):
-        """시뮬레이션 최종 상태를 RTS_RSLT_MAS Output 행으로 변환."""
+        """시뮬레이션 최종 상태를 RTS_RSLT_MAS Output 행으로 변환 (설비 풀 기반 EQP_ID)."""
         start_tm, end_tm = self._resolve_simulation_time_range(data)
         crt_tm = datetime.now().strftime("%Y%m%d%H%M%S")
         rows = []
 
+        deployed_units = env.get_deployed_equipment_units() if hasattr(env, 'get_deployed_equipment_units') else []
+        if deployed_units:
+            for unit in deployed_units:
+                prod_qty_str = str(round(float(unit.produced_qty), 4))
+                rows.append({
+                    'RULE_TIMEKEY': str(rule_timekey),
+                    'EQP_ID': unit.eqp_id,
+                    'EQP_MODEL_CD': unit.eqp_model_cd,
+                    'BATCH_ID': unit.batch_id,
+                    'START_TM': start_tm,
+                    'END_TM': end_tm,
+                    'PLAN_PROD_ATTR_VAL': unit.plan_prod_attr_val or '',
+                    'PROD_QTY': prod_qty_str,
+                    'CUM_PROD_QTY': prod_qty_str,
+                    'CRT_USET_ID': crt_user_id,
+                    'CRT_TM': crt_tm,
+                })
+            return rows
+
+        # fallback: equipment registry 미사용 환경
         for p_idx, prod in enumerate(env.products):
             if prod.startswith("PAD_PROD_"):
                 continue
             for s_idx, oper in enumerate(env.processes):
                 if oper.startswith("PAD_PROC_"):
                     continue
-
                 batch_id = env.batch_id_map.get((prod, oper), 'EQP')
                 produced_qty = float(env.produced[p_idx, s_idx])
-
                 for m_idx, model in enumerate(env.models):
                     eqp_count = int(round(float(env.active_eqp[p_idx, s_idx, m_idx])))
                     if eqp_count <= 0:
                         continue
-
                     per_eqp_prod = produced_qty / eqp_count if eqp_count > 0 else 0.0
                     prod_qty_str = str(round(per_eqp_prod, 4))
-
                     for seq in range(1, eqp_count + 1):
                         rows.append({
                             'RULE_TIMEKEY': str(rule_timekey),
-                            'EQP_ID': f"{batch_id}-{model}-{seq:03d}",
+                            'EQP_ID': f"{model}-{seq:05d}",
                             'EQP_MODEL_CD': model,
+                            'BATCH_ID': batch_id,
                             'START_TM': start_tm,
                             'END_TM': end_tm,
                             'PLAN_PROD_ATTR_VAL': f"{prod}|{oper}",
@@ -266,10 +284,10 @@ class RLSchedulerService:
             self.db.bulk_execute(
                 """
                 INSERT INTO RTS_RSLT_MAS (
-                    RULE_TIMEKEY, EQP_ID, EQP_MODEL_CD, START_TM, END_TM,
+                    RULE_TIMEKEY, EQP_ID, EQP_MODEL_CD, BATCH_ID, START_TM, END_TM,
                     PLAN_PROD_ATTR_VAL, PROD_QTY, CUM_PROD_QTY, CRT_USET_ID, CRT_TM
                 ) VALUES (
-                    :RULE_TIMEKEY, :EQP_ID, :EQP_MODEL_CD, :START_TM, :END_TM,
+                    :RULE_TIMEKEY, :EQP_ID, :EQP_MODEL_CD, :BATCH_ID, :START_TM, :END_TM,
                     :PLAN_PROD_ATTR_VAL, :PROD_QTY, :CUM_PROD_QTY, :CRT_USET_ID, :CRT_TM
                 )
                 """,
