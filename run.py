@@ -5,7 +5,7 @@ from biz.services.rl_scheduler_service import RLSchedulerService
 def main():
     parser = argparse.ArgumentParser(description="강화학습 스케줄러 간편 실행기 (CLI)")
     parser.add_argument("mode", choices=["train", "infer", "benchmark"], help="실행할 모드: 'train' (학습), 'infer' (추론), 또는 'benchmark' (조합최적화 비교)")
-    parser.add_argument("--timekey", type=str, default=None, help="추론 시 저장될 Rule Timekey (생략 시 현재 시간 자동 생성)")
+    parser.add_argument("--timekey", type=str, default=None, help="RULE_TIMEKEY (YYYYMMDDHHMMSS). 학습·추론 시 조회할 Input 스냅샷. 추론 Output 키로도 사용 (생략 시 DB 최신 또는 현재 시각)")
     parser.add_argument("--steps", type=int, default=100000, help="학습 시 진행할 총 타임스텝 (기본: 100000)")
 
     args = parser.parse_args()
@@ -19,7 +19,7 @@ def main():
 
     if args.mode == "train":
         print(f"[학습 모드] RL 모델 학습을 시작합니다. (Timesteps: {args.steps})")
-        rl_service.train_model(total_timesteps=args.steps)
+        rl_service.train_model(total_timesteps=args.steps, rule_timekey=args.timekey)
         print("학습이 완료되었습니다.")
         
     elif args.mode == "infer":

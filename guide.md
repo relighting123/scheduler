@@ -38,28 +38,30 @@ IP와 포트 : localhost:1521
 시물레이터는 1시간 단위로 구동되며 slot이라고 의미한다.
 
 input 데이터의 형태는 하기와 같다.
+학습(Input) 테이블 7종 모두 **RULE_TIMEKEY** 컬럼을 포함한다 (형식: `YYYYMMDDHHMMSS`, 예: `20251020070000`).
+동일 테이블에 서로 다른 RULE_TIMEKEY 스냅샷이 여러 기간·시점으로 공존할 수 있으며, 학습·추론 시 해당 키로 조회한다.
 
 1. 제품별 공정 수순 정보 및 재공 정보
- PLAN_PROD_KEY  | OPER_ID | OPER_SEQ | WIP_QTY
+ RULE_TIMEKEY | PLAN_PROD_KEY  | OPER_ID | OPER_SEQ | WIP_QTY
 
 2. 제품별 공정별 장비 모델별 시간당 생산량
- PLAN_PROD_KEY  | OPER_ID | EQP_MODEL_CD | UPH 
+ RULE_TIMEKEY | PLAN_PROD_KEY  | OPER_ID | EQP_MODEL_CD | UPH 
 
 3. 제품별 공정별 장비 모델별 시간대별 댓수
- BATCH_ID | EQP_MODEL_CD | TIME_SLOT | EQP_QTY
+ RULE_TIMEKEY | BATCH_ID | EQP_MODEL_CD | TIME_SLOT | EQP_QTY
 
 5. 제품별 공정별 장비 모델별 처리가능여부
- PLAN_PROD_KEY  | OPER_ID | EQP_MODEL_CD | AVAIL_YN
+ RULE_TIMEKEY | PLAN_PROD_KEY  | OPER_ID | EQP_MODEL_CD | AVAIL_YN
 
 6. Tool 교체 단위 정보
-BATCH_ID | PLAN_PROD_KEY | OPER_ID
+ RULE_TIMEKEY | BATCH_ID | PLAN_PROD_KEY | OPER_ID
 Batch id는 plan prod key와 oper id에 의해 정의된다. pla prod key||oper_I와 batch id는 N:1 관계이다.
 
 7. Tool 갯수 정보
-BATCH_ID | EQP_MODEL_CD | TOOL_QTY
+ RULE_TIMEKEY | BATCH_ID | EQP_MODEL_CD | TOOL_QTY
 
 8. 계획 정보
- PLAN_PROD_KEY  | OPER_ID | START TIME | END TIME | PLAN_QTY
+ RULE_TIMEKEY | PLAN_PROD_KEY  | OPER_ID | START TIME | END TIME | PLAN_QTY
 계획 제품 Key / Oper 별 계획이 있고 세부 일자 시간대별 계획이 있다. 가령 P1 / PT1H / 2026051707 | 2026051708 | 100 이면 2026년 5월 17일 07시부터 08시까지 10000개를 생산하라는 계획이야. 그리고 2026051708 | 2026051807 | 300 이면 2026년 5월 17일 08시부터 18시까지 300개를 생산하라는 계획이야.
 이런식으로 동일 제품에 대해 여러 계획이 있을 수 있따.
 
