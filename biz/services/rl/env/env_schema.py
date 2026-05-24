@@ -1,7 +1,10 @@
 """학습 스냅샷 간 고정 obs/action 차원을 위한 엔티티 스키마 유틸."""
+import json
+import os
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+from gymnasium import spaces
 
 TABLE_KEYS = (
     "wip_info",
@@ -87,3 +90,65 @@ def compute_canonical_schema(
         models = ["_EMPTY_MODEL_"]
 
     return products, processes, models
+
+
+def obs_dim_from_canonical(
+    products: List[str],
+    processes: List[str],
+) -> int:
+    """SchedulerEnv._get_obs() 차원 (num_prods * num_procs * 8 + 2)."""
+    return len(products) * len(processes) * 8 + 2
+
+
+def action_dim_from_canonical(
+    products: List[str],
+    processes: List[str],
+    models: List[str],
+) -> int:
+    return len(products) * len(processes) * len(models) + 1
+
+
+def build_spaces_from_canonical(
+    products: List[str],
+    processes: List[str],
+    models: List[str],
+) -> Tuple[spaces.Box, spaces.Discrete]:
+    obs_dim = obs_dim_from_canonical(products, processes)
+    return (
+        spaces.Box(low=0, high=1000, shape=(obs_dim,), dtype=np.float32),
+        spaces.Discrete(action_dim_from_canonical(products, processes, models)),
+    )
+
+
+def schema_dict(
+    products: List[str],
+    processes: List[str],
+    models: List[str],
+) -> Dict[str, List[str]]:
+    return {
+        "products": list(products),
+        "processes": list(processes),
+        "models": list(models),
+    }
+
+
+def save_env_schema(
+    products: List[str],
+    processes: List[str],
+    models: List[str],
+    model_path: str = "scheduler_ppo_model",
+) -> str:
+    path = f"{model_path}.schema.json"
+    payload = schema_dict(products, processes, models)
+    payload["obs_dim"] = obs_dim_from_canonical(products, processes)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return path
+
+
+def load_env_schema(model_path: str = "scheduler_ppo_model") -> Optional[Dict[str, List[str]]]:
+    path = f"{model_path}.schema.json"
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)

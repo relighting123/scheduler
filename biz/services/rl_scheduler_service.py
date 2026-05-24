@@ -12,8 +12,6 @@ from stable_baselines3.common.monitor import Monitor
 from biz.services.rl.callbacks import PlottingCallback
 from biz.services.rl.env.scheduler_env import SchedulerEnv
 from biz.services.rl.env.snapshot_rotation_env import SnapshotRotationEnv
-
-
 class RLSchedulerService:
     # 학습(Input) 데이터 스냅샷 식별자 (YYYYMMDDHHMMSS)
     DEFAULT_RULE_TIMEKEY = '20251020070000'
@@ -21,6 +19,27 @@ class RLSchedulerService:
     def __init__(self, db_manager):
         # db_manager는 Core에서 주입받는다고 가정
         self.db = db_manager
+
+    def _make_scheduler_env(self, data, max_steps=24):
+        """10×10 패딩 고정 차원 환경 (obs 802, 학습·추론·평가 공통)."""
+        return SchedulerEnv(
+            data=data,
+            max_steps=max_steps,
+            max_prods=SchedulerEnv.DEFAULT_MAX_PRODS,
+            max_procs=SchedulerEnv.DEFAULT_MAX_PROCS,
+        )
+
+    def _predict_action(self, model, obs):
+        """PPO predict — 관측 차원 검증."""
+        obs = np.asarray(obs, dtype=np.float32).reshape(-1)
+        expected = model.observation_space.shape
+        if obs.shape != expected:
+            raise ValueError(
+                f"관측 차원 불일치: env={obs.shape}, model={expected}. "
+                "동일 패딩(10×10) env로 재학습하세요."
+            )
+        action, _ = model.predict(obs, deterministic=True)
+        return int(action)
 
     def _resolve_rule_timekey(self, rule_timekey=None):
         """조회·학습·추론에 사용할 RULE_TIMEKEY 결정 (미지정 시 DB 최신 또는 기본값)."""
@@ -230,10 +249,10 @@ class RLSchedulerService:
 
         # fallback: equipment registry 미사용 환경
         for p_idx, prod in enumerate(env.products):
-            if prod.startswith("_EMPTY"):
+            if prod.startswith("PAD_PROD_") or prod.startswith("_EMPTY"):
                 continue
             for s_idx, oper in enumerate(env.processes):
-                if oper.startswith("_EMPTY"):
+                if oper.startswith("PAD_PROC_") or oper.startswith("_EMPTY"):
                     continue
                 batch_id = env.batch_id_map.get((prod, oper), 'EQP')
                 produced_qty = float(env.produced[p_idx, s_idx])
@@ -622,9 +641,10 @@ class RLSchedulerService:
         model=None,
         expert_cls=None,
         method_name='simulation',
+        model_path='scheduler_ppo_model',
     ):
         """단일 데이터 스냅샷으로 24스텝 시뮬레이션 후 지표·전환 횟수 반환."""
-        env = SchedulerEnv(data=data, max_steps=max_steps)
+        env = self._make_scheduler_env(data, max_steps=max_steps)
         expert = expert_cls(env) if expert_cls is not None else None
         obs, _ = env.reset()
         transfers = 0
@@ -633,8 +653,7 @@ class RLSchedulerService:
             if expert is not None:
                 action = expert.select_action()
             elif model is not None:
-                action, _ = model.predict(obs, deterministic=True)
-                action = int(action)
+                action = self._predict_action(model, obs)
             else:
                 action = env.action_space.sample()
             obs, reward, terminated, truncated, info = env.step(action)
@@ -682,7 +701,11 @@ class RLSchedulerService:
             print(f"[경고] 모델 '{model_path}' 없음 — 무작위 액션으로 평가합니다.")
             model = None
         rl_metrics, env_rl = self._run_simulation_with_policy(
-            data, max_steps=max_steps, model=model, method_name='rl_test'
+            data,
+            max_steps=max_steps,
+            model=model,
+            method_name='rl_test',
+            model_path=model_path,
         )
 
         def _row(label, m):
@@ -750,27 +773,25 @@ class RLSchedulerService:
         benchmark_dataset='benchmark_dataset',
     ):
         """RULE_TIMEKEY 구간(from~to) 또는 단일 키로 학습 후 벤치마크 데이터셋 성능 비교."""
-        from biz.services.rl.env.env_schema import compute_canonical_schema
-
         snapshots = self.fetch_training_snapshots(
             from_rule_timekey=from_rule_timekey,
             to_rule_timekey=to_rule_timekey,
             rule_timekey=rule_timekey,
         )
         bc_data = snapshots[0]
-        canonical = compute_canonical_schema(snapshots)
+        pad_p, pad_s = SchedulerEnv.DEFAULT_MAX_PRODS, SchedulerEnv.DEFAULT_MAX_PROCS
+        print(f"[학습 env] 10×10 패딩 (max_prods={pad_p}, max_procs={pad_s}, obs_dim={pad_p * pad_s * 8 + 2})")
 
         def make_env():
             if len(snapshots) == 1:
                 return Monitor(
                     SchedulerEnv(
                         data=snapshots[0],
-                        fixed_products=canonical[0],
-                        fixed_processes=canonical[1],
-                        fixed_models=canonical[2],
+                        max_prods=pad_p,
+                        max_procs=pad_s,
                     )
                 )
-            return Monitor(SnapshotRotationEnv(snapshots))
+            return Monitor(SnapshotRotationEnv(snapshots, max_prods=pad_p, max_procs=pad_s))
 
         if n_envs > 1:
             env = SubprocVecEnv([make_env for _ in range(n_envs)])
@@ -787,12 +808,7 @@ class RLSchedulerService:
         )
 
         if pretrain_bc:
-            single_env = SchedulerEnv(
-                data=bc_data,
-                fixed_products=canonical[0],
-                fixed_processes=canonical[1],
-                fixed_models=canonical[2],
-            )
+            single_env = SchedulerEnv(data=bc_data, max_prods=pad_p, max_procs=pad_s)
             expert_obs, expert_actions = self.generate_expert_data(
                 single_env, num_samples=bc_samples
             )
@@ -804,7 +820,7 @@ class RLSchedulerService:
         callback = PlottingCallback(save_path="learning_curve.png")
         model.learn(total_timesteps=total_timesteps, callback=callback)
         model.save("scheduler_ppo_model")
-        print("학습 완료 및 모델 저장됨")
+        print("학습 완료 및 모델 저장됨 (obs 802 = 10×10 패딩)")
 
         comparison_df = None
         if run_test_eval:
@@ -818,10 +834,10 @@ class RLSchedulerService:
         """최종 시뮬레이션 시점의 제품/공정/장비모델별 대수 집계"""
         rows = []
         for p_idx, prod in enumerate(env.products):
-            if prod.startswith("_EMPTY"):
+            if prod.startswith("PAD_PROD_") or prod.startswith("_EMPTY"):
                 continue
             for s_idx, oper in enumerate(env.processes):
-                if oper.startswith("_EMPTY"):
+                if oper.startswith("PAD_PROC_") or oper.startswith("_EMPTY"):
                     continue
                 for m_idx, model in enumerate(env.models):
                     qty = float(env.active_eqp[p_idx, s_idx, m_idx])
@@ -859,7 +875,7 @@ class RLSchedulerService:
                 last_oper_by_prod[row['PLAN_PROD_KEY']] = row['OPER_ID']
 
         process_candidates = [proc for proc in env.processes if not proc.startswith("PAD_PROC_")]
-        for prod in [p for p in env.products if not p.startswith("_EMPTY")]:
+        for prod in [p for p in env.products if not p.startswith("PAD_PROD_") and not p.startswith("_EMPTY")]:
             if prod in last_oper_by_prod:
                 continue
             if not process_candidates:
@@ -871,7 +887,7 @@ class RLSchedulerService:
             last_oper_by_prod[prod] = fallback_oper
 
         rows = []
-        for prod in [p for p in env.products if not p.startswith("_EMPTY")]:
+        for prod in [p for p in env.products if not p.startswith("PAD_PROD_") and not p.startswith("_EMPTY")]:
             oper = last_oper_by_prod.get(prod)
             if oper is None:
                 continue
@@ -966,13 +982,19 @@ class RLSchedulerService:
         resolved_timekey = self._resolve_rule_timekey(rule_timekey)
         print(f"[추론] RULE_TIMEKEY={resolved_timekey} (입력 스냅샷·결과 출력 공통)")
         data = self.fetch_data(rule_timekey=resolved_timekey)
-        env = SchedulerEnv(data=data)
-
+        model_path = "scheduler_ppo_model"
+        model = None
         try:
-            model = PPO.load("scheduler_ppo_model")
+            model = PPO.load(model_path)
         except Exception:
             print("저장된 모델이 없습니다. 임의의 액션으로 시뮬레이션 합니다.")
-            model = None
+
+        env = self._make_scheduler_env(data)
+        if model is not None:
+            print(
+                f"[추론 env] obs={env.observation_space.shape}, "
+                f"model obs={model.observation_space.shape}"
+            )
 
         obs, _ = env.reset()
         done = False
@@ -981,7 +1003,7 @@ class RLSchedulerService:
 
         while not done:
             if model:
-                action, _states = model.predict(obs, deterministic=True)
+                action = self._predict_action(model, obs)
             else:
                 action = env.action_space.sample()
             
@@ -1139,18 +1161,19 @@ class RLSchedulerService:
         # 학습 수행
         self.train_model(total_timesteps=total_timesteps, pretrain_bc=True, n_envs=4)
         
-        env_rl = SchedulerEnv(data=data, max_steps=24)
+        model_path = "scheduler_ppo_model"
         try:
-            model = PPO.load("scheduler_ppo_model")
+            model = PPO.load(model_path)
         except Exception:
             model = None
-            
+
+        env_rl = self._make_scheduler_env(data, max_steps=24)
         obs, _ = env_rl.reset()
         rl_transfers = 0
         done = False
         while not done:
             if model:
-                action, _ = model.predict(obs, deterministic=True)
+                action = self._predict_action(model, obs)
             else:
                 action = env_rl.action_space.sample()
             obs, reward, terminated, truncated, info = env_rl.step(int(action))

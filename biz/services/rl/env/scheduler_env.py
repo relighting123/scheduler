@@ -49,11 +49,14 @@ class EquipmentUnit:
 class SchedulerEnv(gym.Env):
     metadata = {"render_modes": ["human"]}
 
+    DEFAULT_MAX_PRODS = 10
+    DEFAULT_MAX_PROCS = 10
+
     def __init__(
         self,
         data: Dict[str, pd.DataFrame],
-        max_prods: Optional[int] = None,
-        max_procs: Optional[int] = None,
+        max_prods: int = DEFAULT_MAX_PRODS,
+        max_procs: int = DEFAULT_MAX_PROCS,
         max_steps: int = 24,
         fixed_products: Optional[List[str]] = None,
         fixed_processes: Optional[List[str]] = None,
@@ -96,12 +99,16 @@ class SchedulerEnv(gym.Env):
             self.products = list(self.fixed_products)
             self.processes = list(self.fixed_processes)
             self.models = list(self.fixed_models)
-            return
-        self.products, self.processes, self.models = discover_entities_from_data(
-            self.data,
-            max_prods=self.max_prods,
-            max_procs=self.max_procs,
-        )
+        else:
+            self.products, self.processes, self.models = discover_entities_from_data(
+                self.data,
+                max_prods=self.max_prods,
+                max_procs=self.max_procs,
+            )
+        while len(self.products) < self.max_prods:
+            self.products.append(f"PAD_PROD_{len(self.products)}")
+        while len(self.processes) < self.max_procs:
+            self.processes.append(f"PAD_PROC_{len(self.processes)}")
 
     def _needs_tool_conv(
         self,
@@ -407,8 +414,12 @@ class SchedulerEnv(gym.Env):
             wip_norm, active_norm, target_norm, co_norm,
             produced_ratio, st_norm, plan_norm, wip_plan_ratio,
             [1.0], [float(self.current_step) / self.max_steps]
-        ])
-        return obs.astype(np.float32)
+        ]).astype(np.float32)
+        if obs.shape != (self.obs_dim,):
+            raise ValueError(
+                f"관측 벡터 크기 불일치: got {obs.shape}, expected ({self.obs_dim},)"
+            )
+        return obs
 
     def step(self, action):
         transfers = []
@@ -611,11 +622,11 @@ class SchedulerEnv(gym.Env):
         for p in range(self.num_prods):
             p_name = self.products[p]
             # Skip padding products
-            if p_name.startswith("_EMPTY"):
+            if "PAD_PROD" in p_name or p_name.startswith("_EMPTY"):
                 continue
             for s in range(self.num_procs):
                 s_name = self.processes[s]
-                if s_name.startswith("_EMPTY"):
+                if "PAD_PROC" in s_name or s_name.startswith("_EMPTY"):
                     continue
                 
                 # Check if there is any plan, production, or active equipment
