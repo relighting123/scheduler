@@ -5,6 +5,11 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from biz.services.rl.benchmark_scenarios import (
+    DEFAULT_BENCHMARK_SCENARIO,
+    resolve_scenario_id,
+)
+
 TEST_DATA_ROOT = Path(__file__).resolve().parents[3] / "test" / "data"
 
 INPUT_TABLE_FILES = [
@@ -44,9 +49,12 @@ class TestDataLoader:
         )
 
     def scenario_dir(self, scenario: str) -> Path:
-        return self.root / scenario
+        resolved = resolve_scenario_id(scenario)
+        return self.root / resolved
 
-    def load_ground_truth(self, scenario: str = "benchmark_dataset") -> Dict[str, Any]:
+    def load_ground_truth(
+        self, scenario: str = DEFAULT_BENCHMARK_SCENARIO
+    ) -> Dict[str, Any]:
         path = self.scenario_dir(scenario) / "ground_truth.json"
         if not path.is_file():
             raise FileNotFoundError(f"정답 파일이 없습니다: {path}")
@@ -55,7 +63,7 @@ class TestDataLoader:
 
     def load_input_tables(
         self,
-        scenario: str = "benchmark_dataset",
+        scenario: str = DEFAULT_BENCHMARK_SCENARIO,
         rule_timekey: Optional[str] = None,
         drop_timekey: bool = True,
     ) -> Dict[str, pd.DataFrame]:
@@ -105,7 +113,7 @@ class TestDataLoader:
 
     def load_for_env(
         self,
-        scenario: str = "benchmark_dataset",
+        scenario: str = DEFAULT_BENCHMARK_SCENARIO,
         rule_timekey: Optional[str] = None,
     ) -> Dict[str, pd.DataFrame]:
         """SchedulerEnv에 바로 넣을 수 있는 형태(RULE_TIMEKEY 제거)로 반환."""

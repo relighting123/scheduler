@@ -1,4 +1,4 @@
-# 벤치마크 데이터셋 (Benchmark Dataset)
+# 벤치마크 `bench_01` — 다품종·다모델 표준
 
 학습 후 성능 검증·오프라인 평가에 사용하는 표준 테스트 데이터셋입니다.
 
@@ -13,7 +13,7 @@
 
 ```python
 from biz.services.rl.test_data_loader import TestDataLoader
-data = TestDataLoader().load_for_env("benchmark_dataset")
+data = TestDataLoader().load_for_env("bench_01")
 ```
 
-시나리오 ID: `benchmark_dataset`
+시나리오 ID: `bench_01`

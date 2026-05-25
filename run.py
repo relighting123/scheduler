@@ -1,5 +1,6 @@
 import argparse
 from core.repository import BaseRepository
+from biz.services.rl.benchmark_scenarios import DEFAULT_BENCHMARK_SCENARIO
 from biz.services.rl_scheduler_service import RLSchedulerService
 
 def main():
@@ -48,9 +49,12 @@ def main():
     parser.add_argument(
         "--benchmark-dataset",
         type=str,
-        default="benchmark_dataset",
+        default=DEFAULT_BENCHMARK_SCENARIO,
         dest="benchmark_dataset",
-        help="학습 후 평가에 사용할 test/data 하위 데이터셋 ID (기본: benchmark_dataset)",
+        help=(
+            "학습·벤치마크 평가 시나리오. 쉼표로 여러 개 또는 all "
+            f"(기본: {DEFAULT_BENCHMARK_SCENARIO}; 예: bench_01,bench_02 또는 all)"
+        ),
     )
 
     args = parser.parse_args()
@@ -89,9 +93,14 @@ def main():
         print(f"추론 완료 (전환 액션 {len(results) if results else 0}건)")
 
     elif args.mode == "benchmark":
-        print(f"[벤치마크 모드] 데이터셋 평가 (Timesteps: {args.steps})")
-        rl_service.run_benchmark_evaluation(total_timesteps=args.steps)
-        print("벤치마크 데이터셋 평가 완료.")
+        from biz.services.rl.benchmark_scenarios import parse_benchmark_scenarios
+
+        scenario_ids = parse_benchmark_scenarios(args.benchmark_dataset)
+        print(f"[벤치마크 모드] 시나리오={scenario_ids} (파일 기반 평가)")
+        rl_service.evaluate_on_benchmark_datasets(
+            benchmark_datasets=args.benchmark_dataset
+        )
+        print("벤치마크 시나리오 평가 완료.")
 
 if __name__ == "__main__":
     main()
