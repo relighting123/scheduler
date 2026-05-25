@@ -20,7 +20,7 @@ def apply_target_allocation(env, allocation: Dict[str, Any]) -> np.ndarray:
 
 
 def default_benchmark_target_allocation() -> Dict[str, Any]:
-    """bench_01_multiproduct 정답 배치 (표준 벤치마크)."""
+    """bench_01 정답 배치 (표준 벤치마크)."""
     return {
         "P1": {"OP10": {"MODEL_A": 5}, "OP20": {"MODEL_A": 5}},
         "P2": {"OP10": {"MODEL_B": 3}, "OP20": {"MODEL_B": 3}},

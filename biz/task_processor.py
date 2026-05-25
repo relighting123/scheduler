@@ -40,7 +40,7 @@ class TaskProcessor:
                 rule_timekey if rule_timekey not in ("N/A", "") else None
             )
             run_test = params.get("run_test_eval", True)
-            benchmark_dataset = (
+            benchmark_dataset = params.get("benchmark_datasets") or (
                 params.get("benchmark_dataset")
                 or params.get("scenario")
                 or DEFAULT_BENCHMARK_SCENARIO

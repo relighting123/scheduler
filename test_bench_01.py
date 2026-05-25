@@ -1,4 +1,4 @@
-"""벤치마크 bench_01_multiproduct 평가 — test/data/bench_01_multiproduct (DB 불필요)."""
+"""벤치마크 bench_01 평가 — test/data/bench_01 (DB 불필요)."""
 from biz.services.rl.benchmark_scenarios import DEFAULT_BENCHMARK_SCENARIO
 from biz.services.rl_scheduler_service import RLSchedulerService
 from biz.services.rl.test_data_loader import TestDataLoader
@@ -14,9 +14,9 @@ class MockBenchmarkDatasetService(RLSchedulerService):
 
 
 if __name__ == "__main__":
-    print("[1] bench_01_multiproduct 평가 서비스 초기화...")
+    print("[1] bench_01 평가 서비스 초기화...")
     service = MockBenchmarkDatasetService(db_manager=None)
 
-    print("\n[2] 벤치마크 평가 (정답 vs 휴리스틱 vs RL)...")
-    service.run_benchmark_evaluation(total_timesteps=60000)
+    print("\n[2] bench_01 평가 (정답 vs 휴리스틱 vs RL)...")
+    service.evaluate_on_benchmark_dataset(benchmark_dataset="bench_01")
     print("\n[완료]")

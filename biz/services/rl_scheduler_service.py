@@ -12,7 +12,11 @@ from stable_baselines3.common.monitor import Monitor
 from biz.services.rl.callbacks import PlottingCallback
 from biz.services.rl.env.scheduler_env import SchedulerEnv
 from biz.services.rl.env.snapshot_rotation_env import SnapshotRotationEnv
-from biz.services.rl.benchmark_scenarios import DEFAULT_BENCHMARK_SCENARIO, resolve_scenario_id
+from biz.services.rl.benchmark_scenarios import (
+    DEFAULT_BENCHMARK_SCENARIO,
+    parse_benchmark_scenarios,
+    resolve_scenario_id,
+)
 
 
 class RLSchedulerService:
@@ -448,7 +452,7 @@ class RLSchedulerService:
         print("[성공] DB 시나리오 초기화가 완료되었습니다 (WIP_INFO 등 7개 테이블).")
 
     def init_benchmark_dataset_scenario(self):
-        """벤치마크 표준 시나리오(bench_01_multiproduct)와 동일한 데이터를 DB에 적재합니다."""
+        """벤치마크 표준 시나리오(bench_01)와 동일한 데이터를 DB에 적재합니다."""
         print("\n[DB 설정] 벤치마크 데이터셋 시나리오 초기화를 시작합니다...")
         tables = [
             "WIP_INFO", "UPH_INFO", "EQP_QTY_INFO", "AVAIL_INFO",
@@ -843,6 +847,61 @@ class RLSchedulerService:
 
         return comparison_df
 
+    def evaluate_on_benchmark_datasets(
+        self,
+        benchmark_datasets=None,
+        model_path='scheduler_ppo_model',
+        max_steps=24,
+    ):
+        """여러 벤치마크 시나리오를 순차 평가하고 시나리오별·통합 요약을 반환합니다."""
+        scenario_ids = parse_benchmark_scenarios(benchmark_datasets)
+        if len(scenario_ids) == 1:
+            sid = scenario_ids[0]
+            return {sid: self.evaluate_on_benchmark_dataset(
+                benchmark_dataset=sid,
+                model_path=model_path,
+                max_steps=max_steps,
+            )}
+
+        print("\n" + "=" * 80)
+        print(f" [다중 벤치마크 평가 — {len(scenario_ids)}개: {', '.join(scenario_ids)}]")
+        print("=" * 80)
+
+        results = {}
+        summary_frames = []
+        for sid in scenario_ids:
+            df = self.evaluate_on_benchmark_dataset(
+                benchmark_dataset=sid,
+                model_path=model_path,
+                max_steps=max_steps,
+            )
+            results[sid] = df
+            tagged = df.copy()
+            tagged.insert(0, "Scenario", sid)
+            summary_frames.append(tagged)
+
+        combined = pd.concat(summary_frames, ignore_index=True)
+        print("\n" + "=" * 80)
+        print(" [다중 벤치마크 통합 요약]")
+        print("=" * 80)
+        print(combined.to_string(index=False))
+        print("=" * 80)
+
+        log_dir = os.path.join(os.getcwd(), 'logs', 'simulation_logs')
+        os.makedirs(log_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        combined_path = os.path.join(
+            log_dir, f'bench_eval_all_{"_".join(scenario_ids)}_{timestamp}.xlsx'
+        )
+        with pd.ExcelWriter(combined_path) as writer:
+            combined.to_excel(writer, sheet_name='ALL_SCENARIOS', index=False)
+            for sid, df in results.items():
+                df.to_excel(writer, sheet_name=sid[:31], index=False)
+        print(f"[성공] 다중 벤치마크 통합 리포트: {combined_path}")
+
+        results['_combined'] = combined
+        return results
+
     def train_model(
         self,
         total_timesteps=10000,
@@ -911,11 +970,16 @@ class RLSchedulerService:
 
         comparison_df = None
         if run_test_eval:
-            print("\n[학습 후] 벤치마크 데이터셋 기반 성능 비교를 수행합니다...")
-            comparison_df = self.evaluate_on_benchmark_dataset(
-                benchmark_dataset=benchmark_dataset
+            print("\n[학습 후] 벤치마크 시나리오 성능 비교를 수행합니다...")
+            scenarios = parse_benchmark_scenarios(benchmark_dataset)
+            if len(scenarios) == 1:
+                return self.evaluate_on_benchmark_dataset(
+                    benchmark_dataset=scenarios[0]
+                )
+            return self.evaluate_on_benchmark_datasets(
+                benchmark_datasets=benchmark_dataset
             )
-        return comparison_df
+        return None
 
     def _build_final_allocation_df(self, env):
         """최종 시뮬레이션 시점의 제품/공정/장비모델별 대수 집계"""

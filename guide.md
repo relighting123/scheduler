@@ -89,7 +89,7 @@ PLAN PROD KEY와 OPER ID별로 배치된 장비들의 UPH를 통해 UPH만큼 �
 **학습**
 - `from_rule_timekey` ~ `to_rule_timekey` 구간의 스냅샷을 DB에서 조회하여 학습 (구간에 여러 키가 있으면 에피소드마다 무작위 스냅샷).
 - 단일 스냅샷만 지정할 때는 `rule_timekey` 또는 `from`/`to`에 동일 값 지정.
-- 학습 완료 후 `test/data/bench_01_multiproduct/` 등 벤치마크 시나리오로 Optimal·휴리스틱·RL 성능 비교 (`evaluate_on_benchmark_dataset`).
+- 학습 완료 후 `test/data/bench_01/` 등 벤치마크 시나리오로 Optimal·휴리스틱·RL 성능 비교 (`evaluate_on_benchmark_dataset` / 다중: `evaluate_on_benchmark_datasets`, `bench_01,bench_02` 또는 `all`).
 - 벤치마크 데이터셋: 입력 CSV 7종 + `ground_truth.json`(기대 지표).
 
 **추론**
@@ -103,7 +103,7 @@ python run.py infer   # RULE_TIMEKEY=DB MAX (입력·출력 동일)
 ```
 
 **API parameters (rl_train)**
-- `from_rule_timekey`, `to_rule_timekey`, `rule_timekey`, `run_test_eval`, `benchmark_dataset` (또는 `scenario`; 예: `bench_01_multiproduct`)
+- `from_rule_timekey`, `to_rule_timekey`, `rule_timekey`, `run_test_eval`, `benchmark_dataset` (또는 `scenario`; 예: `bench_01`, `bench_01,bench_02`, `all`)
 
 **API parameters (rl_inference)**
 - `rule_timekey` (task 또는 parameters) — 조회·출력 공통

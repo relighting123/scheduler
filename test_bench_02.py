@@ -1,9 +1,8 @@
-"""벤치마크 bench_02_initial_conv — test/data/bench_02_initial_conv (DB 불필요)."""
-from biz.services.rl.benchmark_scenarios import resolve_scenario_id
+"""벤치마크 bench_02 — test/data/bench_02 (DB 불필요)."""
 from biz.services.rl_scheduler_service import RLSchedulerService
 from biz.services.rl.test_data_loader import TestDataLoader
 
-SCENARIO = "bench_02_initial_conv"
+SCENARIO = "bench_02"
 
 
 class MockBenchmarkService(RLSchedulerService):
@@ -16,13 +15,9 @@ class MockBenchmarkService(RLSchedulerService):
 
 
 if __name__ == "__main__":
-    scenario_id = resolve_scenario_id(SCENARIO)
-    print(f"[1] {scenario_id} 평가 서비스 초기화...")
+    print(f"[1] {SCENARIO} 평가 서비스 초기화...")
     service = MockBenchmarkService(db_manager=None)
 
-    print("\n[2] 정답 vs 휴리스틱 vs RL 비교 (학습 생략, 기존 모델 있으면 RL 포함)...")
-    service.evaluate_on_benchmark_dataset(
-        benchmark_dataset=SCENARIO,
-        model_path="scheduler_ppo_model",
-    )
+    print("\n[2] 정답 vs 휴리스틱 vs RL 비교...")
+    service.evaluate_on_benchmark_dataset(benchmark_dataset=SCENARIO)
     print("\n[완료]")
