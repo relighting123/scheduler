@@ -48,6 +48,19 @@ def create_learning_tables(db):
     """)
 
 
+def create_benchmark_tables(db):
+    """Benchmark scenario registry (input rows live in the seven input tables)."""
+    db.execute("""
+        CREATE TABLE BENCHMARK_SCENARIO (
+            SCENARIO_ID VARCHAR2(100) NOT NULL,
+            RULE_TIMEKEY VARCHAR2(14) NOT NULL,
+            DESCRIPTION VARCHAR2(500),
+            GROUND_TRUTH_JSON CLOB,
+            CONSTRAINT PK_BENCHMARK_SCENARIO PRIMARY KEY (SCENARIO_ID)
+        )
+    """)
+
+
 def create_output_tables(db):
     """Create inference output tables."""
     db.execute("""

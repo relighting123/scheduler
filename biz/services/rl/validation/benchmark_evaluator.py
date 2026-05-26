@@ -100,15 +100,15 @@ class BenchmarkEvaluator:
         excel_writer=None,
     ) -> Dict[str, Any]:
         from biz.services.rl.train.expert import HeuristicExpert, OptimalExpert
-        from biz.services.rl.validation.test_data_loader import TestDataLoader
+        from biz.services.rl.validation.benchmark_data_access import BenchmarkDataAccess
 
         print("\n" + "=" * 80)
         print(f" [벤치마크 데이터셋 성능 비교 - dataset: {benchmark_dataset}]")
         print("=" * 80)
 
-        loader = TestDataLoader()
-        data = loader.load_for_env(benchmark_dataset)
-        ground_truth = loader.load_ground_truth(benchmark_dataset)
+        benchmark_db = BenchmarkDataAccess(self._svc.db, self._svc.data)
+        data = benchmark_db.fetch_scenario_input(benchmark_dataset)
+        ground_truth = benchmark_db.load_ground_truth(benchmark_dataset)
         target_alloc = ground_truth.get("target_allocation")
 
         print("\n[1] 정답지(Optimal Ground Truth) 시뮬레이션...")
@@ -212,10 +212,10 @@ class BenchmarkEvaluator:
         model_path="scheduler_ppo_model",
         max_steps=24,
     ) -> Dict[str, Any]:
-        from biz.services.rl.validation.test_data_loader import TestDataLoader
+        from biz.services.rl.validation.benchmark_data_access import BenchmarkDataAccess
 
-        loader = TestDataLoader()
-        datasets = datasets or loader.list_scenarios() or ["benchmark_dataset"]
+        benchmark_db = BenchmarkDataAccess(self._svc.db, self._svc.data)
+        datasets = datasets or benchmark_db.list_scenarios() or ["benchmark_dataset"]
         print("\n" + "#" * 80)
         print(f" [전체 벤치마크 평가 - {len(datasets)}개: {', '.join(datasets)}]")
         print("#" * 80)

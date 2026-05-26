@@ -12,8 +12,12 @@
 ## 로드
 
 ```python
-from biz.services.rl.validation.test_data_loader import TestDataLoader
-data = TestDataLoader().load_for_env("benchmark_dataset")
+from core.repository import BaseRepository
+from biz.services.rl_scheduler_service import RLSchedulerService
+
+service = RLSchedulerService(db_manager=BaseRepository())
+service.seed_benchmark_scenarios(scenarios=["benchmark_dataset"])
+data = service.data.fetch_data(rule_timekey="20251020070000")
 ```
 
 시나리오 ID: `benchmark_dataset`

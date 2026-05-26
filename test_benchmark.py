@@ -1,27 +1,21 @@
-"""벤치마크 데이터셋 평가 — test/data CSV 로더 사용 (DB 불필요)."""
+"""벤치마크 데이터셋 평가 — DB에서 입력·정답 조회."""
+from core.repository import BaseRepository
 from biz.services.rl_scheduler_service import RLSchedulerService
-from biz.services.rl.validation.test_data_loader import TestDataLoader
 
 
-class MockBenchmarkService(RLSchedulerService):
-    """DB 없이 TestDataLoader로 벤치마크 입력을 공급."""
-
-    def __init__(self, scenario: str):
-        super().__init__(db_manager=None)
-        self._scenario = scenario
-
-    def fetch_data(self, rule_timekey=None):
-        loader = TestDataLoader()
-        return loader.load_for_env(self._scenario, rule_timekey=rule_timekey)
-
-
-def run_scenario(scenario: str):
+def run_scenario(scenario: str, reload_seed: bool = False):
     print(f"\n{'=' * 60}\n[벤치마크] {scenario}\n{'=' * 60}")
-    service = MockBenchmarkService(scenario)
+    repo = BaseRepository()
+    service = RLSchedulerService(db_manager=repo)
+    service.ensure_rl_schema()
+    service.seed_benchmark_scenarios(reload=reload_seed, scenarios=[scenario])
     service.evaluate_on_benchmark_dataset(benchmark_dataset=scenario)
 
 
 if __name__ == "__main__":
-    loader = TestDataLoader()
-    for scenario in loader.list_scenarios():
-        run_scenario(scenario)
+    repo = BaseRepository()
+    service = RLSchedulerService(db_manager=repo)
+    service.ensure_rl_schema()
+    scenarios = service.seed_benchmark_scenarios(reload=False)
+    for scenario in scenarios:
+        service.evaluate_on_benchmark_dataset(benchmark_dataset=scenario)

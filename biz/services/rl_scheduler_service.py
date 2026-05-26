@@ -3,7 +3,12 @@
 from biz.services.rl.infer.inference_runner import InferenceRunner
 from biz.services.rl.train.trainer import BenchmarkTrainer
 from biz.services.rl.utils.data_access import DEFAULT_RULE_TIMEKEY, TrainingDataAccess
-from biz.services.rl.utils.db_schema import create_learning_tables, create_output_tables
+from biz.services.rl.utils.db_schema import (
+    create_benchmark_tables,
+    create_learning_tables,
+    create_output_tables,
+)
+from biz.services.rl.validation.benchmark_data_access import BenchmarkDataAccess
 from biz.services.rl.utils.env_factory import SchedulerEnvFactory
 from biz.services.rl.validation.benchmark_evaluator import BenchmarkEvaluator
 
@@ -36,6 +41,22 @@ class RLSchedulerService:
             rule_timekey=rule_timekey,
         )
 
+    def ensure_rl_schema(self):
+        """Create RL input/output/benchmark tables if they do not exist (no DROP)."""
+        for creator in (create_learning_tables, create_benchmark_tables, create_output_tables):
+            try:
+                creator(self.db)
+            except Exception:
+                pass
+
+    def seed_benchmark_scenarios(self, reload=False, scenarios=None, csv_root=None):
+        """Load test/data benchmark CSVs into DB input tables and BENCHMARK_SCENARIO."""
+        self.ensure_rl_schema()
+        access = BenchmarkDataAccess(self.db, self.data)
+        if reload:
+            return access.seed_all_from_directory(csv_root=csv_root, reload=True, scenarios=scenarios)
+        return access.ensure_all_loaded(csv_root=csv_root, scenarios=scenarios)
+
     def init_db_scenario(self):
         """Initialize heuristic trap scenario tables (DROP -> CREATE -> INSERT)."""
         print("\n[DB 설정] DB 시나리오 초기화를 시작합니다 (Heuristic Trap Scenario)...")
@@ -58,6 +79,7 @@ class RLSchedulerService:
                 pass
 
         create_learning_tables(self.db)
+        create_benchmark_tables(self.db)
         create_output_tables(self.db)
         tk = self.DEFAULT_RULE_TIMEKEY
 
@@ -109,7 +131,16 @@ class RLSchedulerService:
     def evaluate_all_benchmark_datasets(self, **kwargs):
         return self._evaluator.evaluate_all(**kwargs)
 
-    def run_benchmark_evaluation(self, datasets=None, model_path="scheduler_ppo_model", max_steps=24):
+    def run_benchmark_evaluation(
+        self,
+        datasets=None,
+        model_path="scheduler_ppo_model",
+        max_steps=24,
+        seed_if_missing=True,
+        reload_seed=False,
+    ):
+        if seed_if_missing or reload_seed:
+            self.seed_benchmark_scenarios(reload=reload_seed, scenarios=datasets)
         print("\n" + "=" * 80)
         print(" [벤치마크 데이터셋 검증 (Optimal vs Heuristic vs RL)]")
         print("=" * 80)

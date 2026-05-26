@@ -16,6 +16,7 @@ biz/services/rl/
 - `env/scheduler_env.py` — observation, action, reward, simulation
 - `train/expert.py` — heuristic/optimal experts and BC labels
 - `train/trainer.py` — `train_model`, behavior cloning, PPO
+- `validation/benchmark_data_access.py` — benchmark DB seed/read (input tables + BENCHMARK_SCENARIO)
 - `validation/benchmark_evaluator.py` — benchmark simulation and reports
 - `infer/outputs.py` — inference summary and action/production logs
 - `infer/rts_output.py` — RTS_RSLT_MAS rows and DB persistence
@@ -25,7 +26,8 @@ biz/services/rl/
 ## Training vs validation vs inference
 
 - `train_model(...)` trains from DB snapshots (`RULE_TIMEKEY` range).
-- `run_benchmark_evaluation(...)` / `evaluate_on_benchmark_dataset(...)` use CSV data under `test/data` only (validation).
+- `seed_benchmark_scenarios(...)` loads `test/data` CSVs into DB (one RULE_TIMEKEY per scenario).
+- `run_benchmark_evaluation(...)` / `evaluate_on_benchmark_dataset(...)` read input from DB (validation).
 - `run_inference(...)` runs the saved model on a DB snapshot (infer).
 
 The default model path is `scheduler_ppo_model`.

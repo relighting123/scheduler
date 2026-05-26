@@ -58,6 +58,11 @@ def main():
         action="store_true",
         help="Evaluate only the scenario passed with --benchmark-dataset.",
     )
+    parser.add_argument(
+        "--reload-benchmark",
+        action="store_true",
+        help="Re-import benchmark CSVs from test/data into DB before evaluation.",
+    )
 
     args = parser.parse_args()
 
@@ -98,9 +103,14 @@ def main():
         print(f"추론 완료 (전환 액션 {len(results) if results else 0}건)")
 
     elif args.mode == "benchmark":
-        print("[벤치마크 모드] 저장된 모델 validation 평가")
+        print("[벤치마크 모드] DB 스냅샷 기반 validation 평가")
+        rl_service.ensure_rl_schema()
         datasets = None if not args.single_benchmark else [args.benchmark_dataset]
-        rl_service.run_benchmark_evaluation(datasets=datasets)
+        rl_service.run_benchmark_evaluation(
+            datasets=datasets,
+            reload_seed=args.reload_benchmark,
+            seed_if_missing=not args.reload_benchmark,
+        )
         print("벤치마크 데이터셋 평가 완료.")
 
 if __name__ == "__main__":
