@@ -1,11 +1,12 @@
-"""테스트 폴더(test/data)에서 벤치마크 입력·정답 데이터를 체계적으로 로드합니다."""
+"""Load benchmark input tables and ground truth from test/data."""
 import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pandas as pd
 
-TEST_DATA_ROOT = Path(__file__).resolve().parents[3] / "test" / "data"
+WORKSPACE_ROOT = Path(__file__).resolve().parents[4]
+TEST_DATA_ROOT = WORKSPACE_ROOT / "test" / "data"
 
 INPUT_TABLE_FILES = [
     "wip_info.csv",
@@ -29,7 +30,7 @@ DATA_KEY_BY_FILE = {
 
 
 class TestDataLoader:
-    """test/data/<scenario>/ 하위 CSV·ground_truth.json 관리."""
+    """Manage CSV scenarios under test/data/<scenario>/."""
 
     def __init__(self, root: Optional[Path] = None):
         self.root = Path(root) if root else TEST_DATA_ROOT
@@ -59,7 +60,6 @@ class TestDataLoader:
         rule_timekey: Optional[str] = None,
         drop_timekey: bool = True,
     ) -> Dict[str, pd.DataFrame]:
-        """시나리오 입력 CSV 7종을 로드하고 RULE_TIMEKEY로 필터링합니다."""
         base = self.scenario_dir(scenario)
         if not base.is_dir():
             raise FileNotFoundError(f"테스트 시나리오 폴더가 없습니다: {base}")
@@ -108,7 +108,6 @@ class TestDataLoader:
         scenario: str = "benchmark_dataset",
         rule_timekey: Optional[str] = None,
     ) -> Dict[str, pd.DataFrame]:
-        """SchedulerEnv에 바로 넣을 수 있는 형태(RULE_TIMEKEY 제거)로 반환."""
         return self.load_input_tables(
             scenario=scenario,
             rule_timekey=rule_timekey,

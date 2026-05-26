@@ -1,7 +1,6 @@
 """Training orchestration for the scheduler PPO policy."""
 
 import contextlib
-import copy
 import io
 
 import numpy as np
@@ -12,10 +11,10 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from torch.utils.data import DataLoader, TensorDataset
 
-from biz.services.rl.callbacks import PlottingCallback
 from biz.services.rl.env.env_schema import compute_canonical_schema, save_env_schema
 from biz.services.rl.env.scheduler_env import SchedulerEnv
 from biz.services.rl.env.snapshot_rotation_env import SnapshotRotationEnv
+from biz.services.rl.train.callbacks import PlottingCallback
 
 
 class BenchmarkTrainer:
@@ -31,8 +30,7 @@ class BenchmarkTrainer:
         expert_cls=None,
         target_allocation=None,
     ):
-        """Generate observation/action pairs from an expert policy."""
-        from biz.services.rl.expert import HeuristicExpert, OptimalExpert
+        from biz.services.rl.train.expert import HeuristicExpert, OptimalExpert
 
         expert_cls = expert_cls or HeuristicExpert
         if target_allocation is not None and expert_cls is OptimalExpert:
@@ -56,9 +54,8 @@ class BenchmarkTrainer:
         return np.array(obs_list), np.array(action_list)
 
     def score_benchmark_model(self, model, scenario_payloads, max_steps=24):
-        """Score a PPO candidate against benchmark optimal references without report files."""
-        from biz.services.rl.benchmark_evaluator import BenchmarkEvaluator
-        from biz.services.rl.expert import OptimalExpert
+        from biz.services.rl.train.expert import OptimalExpert
+        from biz.services.rl.validation.benchmark_evaluator import BenchmarkEvaluator
 
         evaluator = BenchmarkEvaluator(self.service)
         rows = []
@@ -81,13 +78,25 @@ class BenchmarkTrainer:
                 )
 
             keys = [
-                key for key in ref_metrics
+                key
+                for key in ref_metrics
                 if key.endswith("_OP20_ACHIEVEMENT") or key == "AVG_ACHIEVEMENT"
             ]
-            ach_mae = float(np.mean([
-                abs(float(rl_metrics.get(key, 0.0)) - float(ref_metrics.get(key, 0.0)))
-                for key in keys
-            ])) if keys else 100.0
+            ach_mae = (
+                float(
+                    np.mean(
+                        [
+                            abs(
+                                float(rl_metrics.get(key, 0.0))
+                                - float(ref_metrics.get(key, 0.0))
+                            )
+                            for key in keys
+                        ]
+                    )
+                )
+                if keys
+                else 100.0
+            )
             transfer_diff = abs(
                 float(rl_metrics.get("TRANSFERS", 0.0))
                 - float(ref_metrics.get("TRANSFERS", 0.0))
@@ -95,18 +104,21 @@ class BenchmarkTrainer:
             target_total = float(np.sum(getattr(env, "guidance_target_eqp", 0.0))) + 1e-6
             alloc_gap = (
                 float(env._guidance_allocation_gap()) / target_total
-                if hasattr(env, "_guidance_allocation_gap") else 0.0
+                if hasattr(env, "_guidance_allocation_gap")
+                else 0.0
             )
             scenario_score = -ach_mae - (0.25 * transfer_diff) - (10.0 * alloc_gap)
             score_parts.append(scenario_score)
-            rows.append({
-                "scenario": scenario,
-                "rl_avg": rl_metrics.get("AVG_ACHIEVEMENT", 0.0),
-                "opt_avg": ref_metrics.get("AVG_ACHIEVEMENT", 0.0),
-                "ach_mae": round(ach_mae, 2),
-                "transfer_diff": int(transfer_diff),
-                "alloc_gap": round(alloc_gap, 3),
-            })
+            rows.append(
+                {
+                    "scenario": scenario,
+                    "rl_avg": rl_metrics.get("AVG_ACHIEVEMENT", 0.0),
+                    "opt_avg": ref_metrics.get("AVG_ACHIEVEMENT", 0.0),
+                    "ach_mae": round(ach_mae, 2),
+                    "transfer_diff": int(transfer_diff),
+                    "alloc_gap": round(alloc_gap, 3),
+                }
+            )
 
         return float(np.mean(score_parts)) if score_parts else float("-inf"), rows
 
@@ -128,7 +140,6 @@ class BenchmarkTrainer:
         benchmark_datasets=None,
         evaluate_all_benchmarks=True,
     ):
-        """Train on DB snapshots selected by RULE_TIMEKEY, then optionally benchmark."""
         snapshots = self.service.fetch_training_snapshots(
             from_rule_timekey=from_rule_timekey,
             to_rule_timekey=to_rule_timekey,
@@ -153,7 +164,7 @@ class BenchmarkTrainer:
             fixed_processes=fixed_processes,
             fixed_models=fixed_models,
         )
-        self.service._active_env_schema = {
+        self.service.env_factory.active_env_schema = {
             "products": list(sample_env.products),
             "processes": list(sample_env.processes),
             "models": list(sample_env.models),
@@ -267,7 +278,6 @@ class BenchmarkTrainer:
         batch_size=64,
         learning_rate=3e-4,
     ):
-        """Supervised behavior cloning for the SB3 policy network."""
         print("모방학습(Behavior Cloning) 사전 학습 시작...")
         policy = model.policy
         optimizer = optim.Adam(policy.parameters(), lr=learning_rate)
