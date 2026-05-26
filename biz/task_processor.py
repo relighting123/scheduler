@@ -40,6 +40,8 @@ class TaskProcessor:
             )
             run_test = params.get("run_test_eval", True)
             benchmark_dataset = params.get("benchmark_dataset", "benchmark_dataset")
+            benchmark_datasets = params.get("benchmark_datasets")
+            evaluate_all = params.get("evaluate_all_benchmarks", True)
             rl_service.train_model(
                 total_timesteps=timesteps,
                 rule_timekey=single_tk,
@@ -47,6 +49,8 @@ class TaskProcessor:
                 to_rule_timekey=to_tk,
                 run_test_eval=run_test,
                 benchmark_dataset=benchmark_dataset,
+                benchmark_datasets=benchmark_datasets,
+                evaluate_all_benchmarks=evaluate_all,
             )
             return True
         elif action == "rl_inference":

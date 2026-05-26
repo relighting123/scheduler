@@ -89,8 +89,10 @@ PLAN PROD KEY와 OPER ID별로 배치된 장비들의 UPH를 통해 UPH만큼 �
 **학습**
 - `from_rule_timekey` ~ `to_rule_timekey` 구간의 스냅샷을 DB에서 조회하여 학습 (구간에 여러 키가 있으면 에피소드마다 무작위 스냅샷).
 - 단일 스냅샷만 지정할 때는 `rule_timekey` 또는 `from`/`to`에 동일 값 지정.
-- 학습 완료 후 `test/data/benchmark_dataset/` 벤치마크 데이터셋으로 Optimal·휴리스틱·RL 성능 비교 (`evaluate_on_benchmark_dataset`).
-- 벤치마크 데이터셋: 입력 CSV 7종 + `ground_truth.json`(기대 지표).
+- 학습 완료 후 `test/data/` 내 **전체 벤치마크** 데이터셋으로 Optimal·휴리스틱·RL 성능 비교 (`evaluate_all_benchmark_datasets`).
+- 리포트 항목(데이터셋·방법별): **최초 시점** 제품×공정×장비모델별 대수 → **최종** 대수, **생산량·계획량·달성률**, **평균 장비가동률**; 요약표에 OP20 제품별 달성률·전환 횟수.
+- 단일 데이터셋만 평가: `python run.py train --single-benchmark --benchmark-dataset benchmark_dataset`
+- 벤치마크 입력: CSV 7종 + `ground_truth.json` (`python test_benchmark.py`로 DB 없이 검증).
 
 **추론**
 - `rule_timekey`: 조회 스냅샷·RTD_CONV 등 **결과 출력 키 동일**. 미지정·N/A 시 `MAX(RULE_TIMEKEY)` (WIP_INFO).
