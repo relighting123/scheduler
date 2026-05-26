@@ -97,7 +97,7 @@ def print_scenario_detail_report(
 ) -> None:
     """콘솔에 벤치마크 상세 리포트 출력."""
     print("\n" + "-" * 100)
-    print(f" [벤치마크 상세 — {scenario_id} / {method_label}]")
+    print(f" [벤치마크 상세 - {scenario_id} / {method_label}]")
     print(f" 평균 장비가동률: {avg_utilization_pct}%")
     print("-" * 100)
     if detail_df.empty:

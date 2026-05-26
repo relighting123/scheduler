@@ -43,14 +43,20 @@ def main():
     parser.add_argument(
         "--no-test-eval",
         action="store_true",
-        help="학습 후 벤치마크 데이터셋 성능 비교 생략",
+        help="?? ? validation ?? ??",
     )
     parser.add_argument(
         "--benchmark-dataset",
         type=str,
         default="benchmark_dataset",
         dest="benchmark_dataset",
-        help="학습 후 평가에 사용할 test/data 하위 데이터셋 ID (기본: benchmark_dataset)",
+        help="validation? ??? test/data ?? ???? ID (??: benchmark_dataset)",
+    )
+
+    parser.add_argument(
+        "--single-benchmark",
+        action="store_true",
+        help="Evaluate only the scenario passed with --benchmark-dataset.",
     )
 
     args = parser.parse_args()
@@ -92,8 +98,9 @@ def main():
         print(f"추론 완료 (전환 액션 {len(results) if results else 0}건)")
 
     elif args.mode == "benchmark":
-        print(f"[벤치마크 모드] 데이터셋 평가 (Timesteps: {args.steps})")
-        rl_service.run_benchmark_evaluation(total_timesteps=args.steps)
+        print("[벤치마크 모드] 저장된 모델 validation 평가")
+        datasets = None if not args.single_benchmark else [args.benchmark_dataset]
+        rl_service.run_benchmark_evaluation(datasets=datasets)
         print("벤치마크 데이터셋 평가 완료.")
 
 if __name__ == "__main__":

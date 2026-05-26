@@ -133,12 +133,24 @@ class OptimalExpert:
         alloc = target_allocation or default_benchmark_target_allocation()
         self.target = apply_target_allocation(env, alloc)
 
+    def _planned_allocation(self) -> np.ndarray:
+        planned = np.array(self.env.active_eqp, copy=True)
+        planned += self.env.target_eqp
+        for t_prod, t_proc, t_model, _unit in getattr(self.env, "pending_unit_moves", []):
+            planned[t_prod, t_proc, t_model] += 1
+        for job in getattr(self.env, "conv_queue", []):
+            model_idx = self.env.model_idx.get(job.unit.eqp_model_cd)
+            if model_idx is not None:
+                planned[job.t_prod, job.t_proc, model_idx] += 1
+        return planned
+
     def select_action(self):
         """Finds the next equipment move to match the target optimal allocation."""
+        planned = self._planned_allocation()
         for p in range(self.num_prods):
             for s in range(self.num_procs):
                 for m in range(self.num_models):
-                    curr = self.env.active_eqp[p, s, m] + self.env.target_eqp[p, s, m]
+                    curr = planned[p, s, m]
                     tgt = self.target[p, s, m]
                     if curr < tgt:
                         for sp in range(self.num_prods):

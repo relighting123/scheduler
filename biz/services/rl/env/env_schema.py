@@ -3,6 +3,7 @@ import json
 import os
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 from gymnasium import spaces
 
@@ -21,6 +22,7 @@ def discover_entities_from_data(
     data: Dict[str, pd.DataFrame],
     max_prods: Optional[int] = None,
     max_procs: Optional[int] = None,
+    max_models: Optional[int] = None,
 ) -> Tuple[List[str], List[str], List[str]]:
     """단일 스냅샷에서 제품·공정·모델 목록 추출 (패딩 없음)."""
     prods, procs, models = set(), set(), set()
@@ -49,6 +51,8 @@ def discover_entities_from_data(
         products = products[:max_prods]
     if max_procs is not None:
         processes = processes[:max_procs]
+    if max_models is not None:
+        model_list = model_list[:max_models]
 
     if not products:
         products = ["_EMPTY_PROD_"]
@@ -64,11 +68,17 @@ def compute_canonical_schema(
     snapshots: List[Dict[str, pd.DataFrame]],
     max_prods: Optional[int] = None,
     max_procs: Optional[int] = None,
+    max_models: Optional[int] = None,
 ) -> Tuple[List[str], List[str], List[str]]:
     """여러 스냅샷의 합집합으로 고정 학습 차원 정의."""
     all_prods, all_procs, all_models = set(), set(), set()
     for data in snapshots:
-        p, s, m = discover_entities_from_data(data, max_prods=max_prods, max_procs=max_procs)
+        p, s, m = discover_entities_from_data(
+            data,
+            max_prods=max_prods,
+            max_procs=max_procs,
+            max_models=max_models,
+        )
         all_prods.update(p)
         all_procs.update(s)
         all_models.update(m)
@@ -81,6 +91,8 @@ def compute_canonical_schema(
         products = products[:max_prods]
     if max_procs is not None:
         processes = processes[:max_procs]
+    if max_models is not None:
+        models = models[:max_models]
 
     if not products:
         products = ["_EMPTY_PROD_"]
@@ -95,9 +107,14 @@ def compute_canonical_schema(
 def obs_dim_from_canonical(
     products: List[str],
     processes: List[str],
+    models: List[str],
 ) -> int:
-    """SchedulerEnv._get_obs() 차원 (num_prods * num_procs * 8 + 2)."""
-    return len(products) * len(processes) * 8 + 2
+    """SchedulerEnv._get_obs() 차원."""
+    return (
+        len(products) * len(processes) * 8
+        + len(products) * len(processes) * len(models) * 5
+        + 2
+    )
 
 
 def action_dim_from_canonical(
@@ -113,7 +130,7 @@ def build_spaces_from_canonical(
     processes: List[str],
     models: List[str],
 ) -> Tuple[spaces.Box, spaces.Discrete]:
-    obs_dim = obs_dim_from_canonical(products, processes)
+    obs_dim = obs_dim_from_canonical(products, processes, models)
     return (
         spaces.Box(low=0, high=1000, shape=(obs_dim,), dtype=np.float32),
         spaces.Discrete(action_dim_from_canonical(products, processes, models)),
@@ -140,7 +157,11 @@ def save_env_schema(
 ) -> str:
     path = f"{model_path}.schema.json"
     payload = schema_dict(products, processes, models)
-    payload["obs_dim"] = obs_dim_from_canonical(products, processes)
+    payload["max_prods"] = len(products)
+    payload["max_procs"] = len(processes)
+    payload["max_models"] = len(models)
+    payload["obs_dim"] = obs_dim_from_canonical(products, processes, models)
+    payload["action_dim"] = action_dim_from_canonical(products, processes, models)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     return path

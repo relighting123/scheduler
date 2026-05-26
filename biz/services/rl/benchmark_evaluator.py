@@ -1,4 +1,4 @@
-"""벤치마크 시뮬레이션·리포트 (학습 후 성능 검증)."""
+"""벤치마크 시뮬레이션·리포트 (validation/evaluation only)."""
 from __future__ import annotations
 
 import os
@@ -32,7 +32,11 @@ class BenchmarkEvaluator:
         target_allocation=None,
     ):
         svc = self._svc
-        env = svc._make_scheduler_env(data, max_steps=max_steps)
+        env = svc._make_scheduler_env(
+            data,
+            max_steps=max_steps,
+            guidance_target_allocation=target_allocation,
+        )
         expert = None
         if expert_cls is not None:
             if target_allocation is not None and expert_cls.__name__ == 'OptimalExpert':
@@ -48,7 +52,12 @@ class BenchmarkEvaluator:
             if expert is not None:
                 action = expert.select_action()
             elif model is not None:
-                action = svc._predict_action(model, obs)
+                try:
+                    action = svc._predict_action(model, obs)
+                except ValueError as exc:
+                    print(f"[경고] 모델/env 차원 불일치 - 무작위 액션으로 평가합니다. {exc}")
+                    model = None
+                    action = env.action_space.sample()
             else:
                 action = env.action_space.sample()
             obs, reward, terminated, truncated, info = env.step(action)
@@ -89,7 +98,7 @@ class BenchmarkEvaluator:
 
         svc = self._svc
         print("\n" + "=" * 80)
-        print(f" [벤치마크 데이터셋 성능 비교 — dataset: {benchmark_dataset}]")
+        print(f" [벤치마크 데이터셋 성능 비교 - dataset: {benchmark_dataset}]")
         print("=" * 80)
 
         loader = TestDataLoader()
@@ -110,10 +119,14 @@ class BenchmarkEvaluator:
         try:
             model = PPO.load(model_path)
         except Exception:
-            print(f"[경고] 모델 '{model_path}' 없음 — 무작위 액션으로 평가합니다.")
+            print(f"[경고] 모델 '{model_path}' 없음 - 무작위 액션으로 평가합니다.")
             model = None
         rl_metrics, env_rl, rl_detail = self.run_simulation(
-            data, max_steps=max_steps, model=model, method_name='rl_test',
+            data,
+            max_steps=max_steps,
+            model=model,
+            method_name='rl_test',
+            target_allocation=target_alloc,
         )
 
         comparison_df = pd.DataFrame([
@@ -131,7 +144,7 @@ class BenchmarkEvaluator:
             print_scenario_detail_report(benchmark_dataset, label, detail_df, avg_util)
 
         print("\n" + "=" * 80)
-        print(f" [벤치마크 비교 요약 — {benchmark_dataset}]")
+        print(f" [벤치마크 비교 요약 - {benchmark_dataset}]")
         print("=" * 80)
         print(comparison_df.to_string(index=False))
         print("=" * 80)
@@ -179,7 +192,7 @@ class BenchmarkEvaluator:
         loader = TestDataLoader()
         datasets = datasets or loader.list_scenarios() or ['benchmark_dataset']
         print("\n" + "#" * 80)
-        print(f" [전체 벤치마크 평가 — {len(datasets)}개: {', '.join(datasets)}]")
+        print(f" [전체 벤치마크 평가 - {len(datasets)}개: {', '.join(datasets)}]")
         print("#" * 80)
 
         results = {}

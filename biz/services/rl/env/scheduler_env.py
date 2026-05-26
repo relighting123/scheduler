@@ -64,25 +64,30 @@ class SchedulerEnv(gym.Env):
 
     DEFAULT_MAX_PRODS = 10
     DEFAULT_MAX_PROCS = 10
+    DEFAULT_MAX_MODELS = 10
 
     def __init__(
         self,
         data: Dict[str, pd.DataFrame],
         max_prods: int = DEFAULT_MAX_PRODS,
         max_procs: int = DEFAULT_MAX_PROCS,
+        max_models: int = DEFAULT_MAX_MODELS,
         max_steps: int = 24,
         fixed_products: Optional[List[str]] = None,
         fixed_processes: Optional[List[str]] = None,
         fixed_models: Optional[List[str]] = None,
+        guidance_target_allocation: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
     ):
         super(SchedulerEnv, self).__init__()
         self.data = data
         self.max_prods = max_prods
         self.max_procs = max_procs
+        self.max_models = max_models
         self.max_steps = max_steps
         self.fixed_products = fixed_products
         self.fixed_processes = fixed_processes
         self.fixed_models = fixed_models
+        self.guidance_target_allocation = guidance_target_allocation
 
         self.products = []
         self.processes = []
@@ -102,7 +107,11 @@ class SchedulerEnv(gym.Env):
 
         self.action_space = spaces.Discrete(self.num_prods * self.num_procs * self.num_models + 1)
         
-        self.obs_dim = (self.num_prods * self.num_procs * 8) + 2
+        self.obs_dim = (
+            self.num_prods * self.num_procs * 8
+            + self.num_prods * self.num_procs * self.num_models * 5
+            + 2
+        )
         self.observation_space = spaces.Box(low=0, high=1000, shape=(self.obs_dim,), dtype=np.float32)
 
         self.reset()
@@ -117,11 +126,14 @@ class SchedulerEnv(gym.Env):
                 self.data,
                 max_prods=self.max_prods,
                 max_procs=self.max_procs,
+                max_models=self.max_models,
             )
         while len(self.products) < self.max_prods:
             self.products.append(f"PAD_PROD_{len(self.products)}")
         while len(self.processes) < self.max_procs:
             self.processes.append(f"PAD_PROC_{len(self.processes)}")
+        while len(self.models) < self.max_models:
+            self.models.append(f"PAD_MODEL_{len(self.models)}")
 
     def _needs_tool_conv(
         self,
@@ -410,6 +422,7 @@ class SchedulerEnv(gym.Env):
         self.idle_eqp = np.zeros(self.num_models)
         self.st_matrix = np.zeros((self.num_prods, self.num_procs, self.num_models))
         self.avail_matrix = np.ones((self.num_prods, self.num_procs, self.num_models), dtype=bool)
+        self.guidance_target_eqp = np.zeros((self.num_prods, self.num_procs, self.num_models))
         
         self.prod_idx = {p: i for i, p in enumerate(self.products)}
         self.proc_idx = {p: i for i, p in enumerate(self.processes)}
@@ -441,6 +454,7 @@ class SchedulerEnv(gym.Env):
 
         self._load_avail_matrix()
         self._apply_avail_to_st_matrix()
+        self._load_guidance_target_allocation()
                         
         # Initialize active equipment from DB
         batch_df = self.data.get('batch_tool_info', pd.DataFrame())
@@ -478,6 +492,28 @@ class SchedulerEnv(gym.Env):
         self.production_logs = []
         return self._get_obs(), {}
 
+    def _load_guidance_target_allocation(self):
+        if not self.guidance_target_allocation:
+            return
+        for prod, opers in self.guidance_target_allocation.items():
+            if prod not in self.prod_idx:
+                continue
+            for oper, models in opers.items():
+                if oper not in self.proc_idx:
+                    continue
+                for model, qty in models.items():
+                    if model in self.model_idx:
+                        self.guidance_target_eqp[
+                            self.prod_idx[prod],
+                            self.proc_idx[oper],
+                            self.model_idx[model],
+                        ] = float(qty)
+
+    def _guidance_allocation_gap(self) -> float:
+        if not np.any(self.guidance_target_eqp):
+            return 0.0
+        return float(np.sum(np.abs(self.active_eqp - self.guidance_target_eqp)))
+
     def _record_initial_assignments(self):
         """초기 배치·유휴 상태를 장비별 SEQ_NO=1부터 이력에 기록."""
         for unit in self.equipment_units:
@@ -503,10 +539,17 @@ class SchedulerEnv(gym.Env):
         st_norm = (st_per_pp / 60.0).flatten()
         plan_norm = (self.plan / 1000.0).flatten()
         wip_plan_ratio = (self.wip / (self.plan + 1e-6)).flatten()
+        model_active_norm = (self.active_eqp / 100.0).flatten()
+        model_target_norm = (self.target_eqp / 100.0).flatten()
+        model_st_norm = (self.st_matrix / 60.0).flatten()
+        model_avail = self.avail_matrix.astype(np.float32).flatten()
+        guidance_target_norm = (self.guidance_target_eqp / 100.0).flatten()
         
         obs = np.concatenate([
             wip_norm, active_norm, target_norm, co_norm,
             produced_ratio, st_norm, plan_norm, wip_plan_ratio,
+            model_active_norm, model_target_norm, model_st_norm,
+            model_avail, guidance_target_norm,
             [1.0], [float(self.current_step) / self.max_steps]
         ]).astype(np.float32)
         if obs.shape != (self.obs_dim,):
@@ -517,6 +560,7 @@ class SchedulerEnv(gym.Env):
 
     def step(self, action):
         transfers = []
+        prev_guidance_gap = self._guidance_allocation_gap()
 
         self._release_conv_units()
 
@@ -670,6 +714,7 @@ class SchedulerEnv(gym.Env):
 
         self._resolve_pending_unit_moves()
         self.target_eqp.fill(0)
+        next_guidance_gap = self._guidance_allocation_gap()
         
         self.current_step += 1
         terminated = self.current_step >= self.max_steps
@@ -685,6 +730,10 @@ class SchedulerEnv(gym.Env):
         # 2. 장비 이동이 발생한 경우 페널티 부여 (패널티를 0.01에서 0.002로 완화하여 장비 재배치를 유도)
         if len(transfers) > 0:
             reward -= 0.002 * len(transfers)
+
+        if np.any(self.guidance_target_eqp):
+            target_total = float(np.sum(self.guidance_target_eqp)) + 1e-6
+            reward += 0.5 * ((prev_guidance_gap - next_guidance_gap) / target_total)
             
         # 3. 에피소드 종료 시 최종 계획 달성률에 따른 보너스 부여 (계단식 보상 추가로 Sparse Reward 개선)
         if terminated:
@@ -697,6 +746,10 @@ class SchedulerEnv(gym.Env):
                 reward += 0.4
             elif final_achievement >= 0.60:
                 reward += 0.1
+            if np.any(self.guidance_target_eqp):
+                target_total = float(np.sum(self.guidance_target_eqp)) + 1e-6
+                target_match = max(0.0, 1.0 - (next_guidance_gap / target_total))
+                reward += target_match
         
         return self._get_obs(), float(reward), terminated, False, {'transfers': transfers}
 

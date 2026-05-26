@@ -1,23 +1,32 @@
 import os
-import re
 import pandas as pd
 import numpy as np
-import torch
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
 from datetime import datetime
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
-from stable_baselines3.common.monitor import Monitor
-from biz.services.rl.callbacks import PlottingCallback
 from biz.services.rl.benchmark_report import (
-    build_comparison_row,
     build_scenario_detail_df,
     capture_initial_allocation,
-    print_scenario_detail_report,
 )
 from biz.services.rl.env.scheduler_env import SchedulerEnv
-from biz.services.rl.env.snapshot_rotation_env import SnapshotRotationEnv
+from biz.services.rl.env.env_schema import load_env_schema
+from biz.services.rl.inference_outputs import (
+    build_allocation_pivot_df,
+    build_final_allocation_df,
+    build_last_process_achievement_df,
+    save_action_results,
+    save_inference_summary,
+    save_production_logs,
+)
+from biz.services.rl.rts_output import (
+    build_rts_rslt_mas_rows,
+    format_timekey_14,
+    resolve_simulation_base_datetime,
+    resolve_simulation_time_range,
+    save_rts_rslt_mas,
+    segment_slot_time_range,
+    step_to_slot_tm,
+)
+from biz.services.rl.training import BenchmarkTrainer
 class RLSchedulerService:
     # 학습(Input) 데이터 스냅샷 식별자 (YYYYMMDDHHMMSS)
     DEFAULT_RULE_TIMEKEY = '20251020070000'
@@ -25,14 +34,33 @@ class RLSchedulerService:
     def __init__(self, db_manager):
         # db_manager는 Core에서 주입받는다고 가정
         self.db = db_manager
+        self._active_env_schema = None
 
-    def _make_scheduler_env(self, data, max_steps=24):
-        """10×10 패딩 고정 차원 환경 (obs 802, 학습·추론·평가 공통)."""
+    def _make_scheduler_env(self, data, max_steps=24, guidance_target_allocation=None):
+        """Fixed product/process/model schema environment."""
+        schema = self._active_env_schema or load_env_schema()
+        schema_kwargs = {}
+        if schema:
+            schema_kwargs = {
+                "fixed_products": schema.get("products"),
+                "fixed_processes": schema.get("processes"),
+                "fixed_models": schema.get("models"),
+                "max_prods": schema.get("max_prods", len(schema.get("products", []))),
+                "max_procs": schema.get("max_procs", len(schema.get("processes", []))),
+                "max_models": schema.get("max_models", len(schema.get("models", []))),
+            }
+            schema_kwargs = {k: v for k, v in schema_kwargs.items() if v}
+        else:
+            schema_kwargs = {
+                "max_prods": SchedulerEnv.DEFAULT_MAX_PRODS,
+                "max_procs": SchedulerEnv.DEFAULT_MAX_PROCS,
+                "max_models": SchedulerEnv.DEFAULT_MAX_MODELS,
+            }
         return SchedulerEnv(
             data=data,
             max_steps=max_steps,
-            max_prods=SchedulerEnv.DEFAULT_MAX_PRODS,
-            max_procs=SchedulerEnv.DEFAULT_MAX_PROCS,
+            guidance_target_allocation=guidance_target_allocation,
+            **schema_kwargs,
         )
 
     def _predict_action(self, model, obs):
@@ -209,199 +237,31 @@ class RLSchedulerService:
         """)
 
     def _format_timekey_14(self, time_value):
-        """PLAN 시간값을 YYYYMMDDHHMMSS(14자리)로 정규화."""
-        return str(time_value).strip().ljust(14, '0')[:14]
+        return format_timekey_14(time_value)
 
     def _resolve_simulation_time_range(self, data):
-        """시뮬레이션 전체 구간 START_TM / END_TM (PLAN_INFO 기준, fallback용)."""
-        plan_df = data.get('plan_info', pd.DataFrame())
-        if plan_df.empty or not {'START_TIME', 'END_TIME'}.issubset(plan_df.columns):
-            now = datetime.now().strftime("%Y%m%d%H%M%S")
-            return now, now
-        start_tm = self._format_timekey_14(plan_df['START_TIME'].astype(str).min())
-        end_tm = self._format_timekey_14(plan_df['END_TIME'].astype(str).max())
-        return start_tm, end_tm
+        return resolve_simulation_time_range(data)
 
     def _resolve_simulation_base_datetime(self, data, rule_timekey=None):
-        """1 slot = 1시간 시뮬레이션의 기준 시각 (PLAN START_TIME 또는 RULE_TIMEKEY)."""
-        plan_df = data.get('plan_info', pd.DataFrame())
-        if not plan_df.empty and 'START_TIME' in plan_df.columns:
-            base_str = self._format_timekey_14(plan_df['START_TIME'].astype(str).min())
-        elif rule_timekey and str(rule_timekey) not in ('', 'N/A', 'benchmark'):
-            base_str = self._format_timekey_14(rule_timekey)
-        else:
-            base_str = datetime.now().strftime("%Y%m%d%H%M%S")
-
-        if len(base_str) >= 14:
-            return datetime.strptime(base_str[:14], "%Y%m%d%H%M%S")
-        if len(base_str) >= 10:
-            return datetime.strptime(base_str[:10], "%Y%m%d%H")
-        return datetime.strptime(base_str[:8] + "00", "%Y%m%d%H")
+        return resolve_simulation_base_datetime(data, rule_timekey=rule_timekey)
 
     def _step_to_slot_tm(self, base_dt, step_index: int) -> str:
-        """시뮬레이션 step 인덱스 → 해당 시간대 시작 시각 (YYYYMMDDHHMMSS)."""
-        from datetime import timedelta
-
-        slot_dt = base_dt + timedelta(hours=int(step_index))
-        return slot_dt.strftime("%Y%m%d%H%M%S")
+        return step_to_slot_tm(base_dt, step_index)
 
     def _segment_slot_time_range(self, data, seg, max_steps: int, rule_timekey=None):
-        """할당 구간의 START_TM(시작 step) / END_TM(종료 step) — 17시 CONV → END 18시."""
-        base_dt = self._resolve_simulation_base_datetime(data, rule_timekey=rule_timekey)
-        start_step = int(seg.start_step)
-        end_step = seg.end_step
-        if end_step is None:
-            end_step = min(start_step + 1, max_steps)
-        else:
-            end_step = int(end_step)
-        if end_step <= start_step:
-            end_step = start_step + 1
-        start_tm = self._step_to_slot_tm(base_dt, start_step)
-        end_tm = self._step_to_slot_tm(base_dt, end_step)
-        return start_tm, end_tm
+        return segment_slot_time_range(data, seg, max_steps, rule_timekey=rule_timekey)
 
     def _build_rts_rslt_mas_rows(self, env, data, rule_timekey, crt_user_id='SYSTEM'):
-        """시뮬레이션 최종 상태를 RTS_RSLT_MAS Output 행으로 변환 (설비 풀 기반 EQP_ID)."""
-        fallback_start, fallback_end = self._resolve_simulation_time_range(data)
-        max_steps = int(getattr(env, 'max_steps', 24))
-        crt_tm = datetime.now().strftime("%Y%m%d%H%M%S")
-        rows = []
-
-        all_units = []
-        if hasattr(env, "get_all_equipment_units"):
-            all_units = env.get_all_equipment_units()
-        elif hasattr(env, "get_deployed_equipment_units"):
-            all_units = env.get_deployed_equipment_units()
-
-        if hasattr(env, "iter_rts_assignment_records"):
-            records = env.iter_rts_assignment_records()
-            for unit, seg in records:
-                seg_start, seg_end = self._segment_slot_time_range(
-                    data, seg, max_steps, rule_timekey=rule_timekey
-                )
-                prod_qty_str = str(round(float(seg.produced_qty), 4))
-                cum_qty_str = str(round(float(unit.produced_qty), 4))
-                rows.append({
-                    'RULE_TIMEKEY': str(rule_timekey),
-                    'SEQ_NO': seg.seq_no,
-                    'EQP_ID': unit.eqp_id,
-                    'EQP_MODEL_CD': unit.eqp_model_cd,
-                    'BATCH_ID': seg.batch_id,
-                    'START_TM': seg_start,
-                    'END_TM': seg_end,
-                    'PLAN_PROD_ATTR_VAL': seg.plan_prod_attr_val,
-                    'PROD_QTY': prod_qty_str,
-                    'CUM_PROD_QTY': cum_qty_str,
-                    'CRT_USET_ID': crt_user_id,
-                    'CRT_TM': crt_tm,
-                })
-            return rows
-
-        if all_units:
-            for unit in all_units:
-                prod_qty_str = str(round(float(unit.produced_qty), 4))
-                rows.append({
-                    'RULE_TIMEKEY': str(rule_timekey),
-                    'SEQ_NO': 1,
-                    'EQP_ID': unit.eqp_id,
-                    'EQP_MODEL_CD': unit.eqp_model_cd,
-                    'BATCH_ID': unit.batch_id,
-                    'START_TM': self._step_to_slot_tm(
-                        self._resolve_simulation_base_datetime(data, rule_timekey),
-                        0,
-                    ),
-                    'END_TM': self._step_to_slot_tm(
-                        self._resolve_simulation_base_datetime(data, rule_timekey),
-                        max_steps,
-                    ),
-                    'PLAN_PROD_ATTR_VAL': unit.plan_prod_attr_val or '',
-                    'PROD_QTY': prod_qty_str,
-                    'CUM_PROD_QTY': prod_qty_str,
-                    'CRT_USET_ID': crt_user_id,
-                    'CRT_TM': crt_tm,
-                })
-            return rows
-
-        # fallback: equipment registry 미사용 환경
-        for p_idx, prod in enumerate(env.products):
-            if prod.startswith("PAD_PROD_") or prod.startswith("_EMPTY"):
-                continue
-            for s_idx, oper in enumerate(env.processes):
-                if oper.startswith("PAD_PROC_") or oper.startswith("_EMPTY"):
-                    continue
-                batch_id = env.batch_id_map.get((prod, oper), 'EQP')
-                produced_qty = float(env.produced[p_idx, s_idx])
-                for m_idx, model in enumerate(env.models):
-                    eqp_count = int(round(float(env.active_eqp[p_idx, s_idx, m_idx])))
-                    if eqp_count <= 0:
-                        continue
-                    per_eqp_prod = produced_qty / eqp_count if eqp_count > 0 else 0.0
-                    prod_qty_str = str(round(per_eqp_prod, 4))
-                    for eqp_seq in range(1, eqp_count + 1):
-                        rows.append({
-                            'RULE_TIMEKEY': str(rule_timekey),
-                            'SEQ_NO': 1,
-                            'EQP_ID': f"{model}-{eqp_seq:05d}",
-                            'EQP_MODEL_CD': model,
-                            'BATCH_ID': batch_id,
-                            'START_TM': fallback_start,
-                            'END_TM': fallback_end,
-                            'PLAN_PROD_ATTR_VAL': f"{prod}|{oper}",
-                            'PROD_QTY': prod_qty_str,
-                            'CUM_PROD_QTY': prod_qty_str,
-                            'CRT_USET_ID': crt_user_id,
-                            'CRT_TM': crt_tm,
-                        })
-        return rows
+        return build_rts_rslt_mas_rows(env, data, rule_timekey, crt_user_id=crt_user_id)
 
     def save_rts_rslt_mas(self, env, data, rule_timekey, crt_user_id='SYSTEM'):
-        """RTS_RSLT_MAS Output 저장 (동일 RULE_TIMEKEY 삭제 후 INSERT)."""
-        rows = self._build_rts_rslt_mas_rows(env, data, rule_timekey, crt_user_id=crt_user_id)
-        if not rows:
-            print("\n[RTS_RSLT_MAS] 저장할 결과가 없습니다.")
-            return rows
-
-        df = pd.DataFrame(rows)
-        print(f"\n[RTS_RSLT_MAS] 총 {len(df)}건 Output")
-        print("-" * 80)
-        print(df.to_string(index=False))
-        print("-" * 80)
-
-        log_dir = os.path.join(os.getcwd(), 'logs', 'simulation_logs')
-        os.makedirs(log_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_timekey = str(rule_timekey).replace(" ", "_")
-        file_path = os.path.join(log_dir, f'rts_rslt_mas_{safe_timekey}_{timestamp}.xlsx')
-        df.to_excel(file_path, index=False)
-        print(f"[성공] RTS_RSLT_MAS Output이 엑셀로 저장되었습니다: {file_path}")
-
-        if self.db is None:
-            return rows
-
-        try:
-            self.db.execute(
-                "DELETE FROM RTS_RSLT_MAS WHERE RULE_TIMEKEY = :tk",
-                {"tk": str(rule_timekey)},
-            )
-            self.db.bulk_execute(
-                """
-                INSERT INTO RTS_RSLT_MAS (
-                    RULE_TIMEKEY, SEQ_NO, EQP_ID, EQP_MODEL_CD, BATCH_ID, START_TM, END_TM,
-                    PLAN_PROD_ATTR_VAL, PROD_QTY, CUM_PROD_QTY, CRT_USET_ID, CRT_TM
-                ) VALUES (
-                    :RULE_TIMEKEY, :SEQ_NO, :EQP_ID, :EQP_MODEL_CD, :BATCH_ID, :START_TM, :END_TM,
-                    :PLAN_PROD_ATTR_VAL, :PROD_QTY, :CUM_PROD_QTY, :CRT_USET_ID, :CRT_TM
-                )
-                """,
-                rows,
-            )
-            print(f"[성공] RTS_RSLT_MAS {len(rows)}건 DB 저장 완료 (RULE_TIMEKEY={rule_timekey})")
-        except Exception as exc:
-            if 'ORA-00942' in str(exc) or 'table or view does not exist' in str(exc).lower():
-                print("[안내] RTS_RSLT_MAS 테이블이 없어 DB 저장을 건너뜁니다. schema/scheduler_tables.sql을 적용하세요.")
-            else:
-                print(f"[경고] RTS_RSLT_MAS DB 저장 실패: {exc}")
-        return rows
+        return save_rts_rslt_mas(
+            self.db,
+            env,
+            data,
+            rule_timekey,
+            crt_user_id=crt_user_id,
+        )
 
     def init_db_scenario(self):
         """휴리스틱 함정(Trap) 시나리오용 DB 초기화 (DROP -> CREATE -> INSERT)"""
@@ -538,58 +398,44 @@ class RLSchedulerService:
                 'plan_info': pd.DataFrame(columns=['RULE_TIMEKEY', 'PLAN_PROD_KEY', 'OPER_ID', 'START_TIME', 'END_TIME', 'PLAN_QTY']),
             }, resolved_tk)
 
-    def generate_expert_data(self, env, num_samples=5000):
-        """휴리스틱 룰(UPH 기반 최적화)을 적용한 전문가 데이터 생성"""
-        from biz.services.rl.expert import HeuristicExpert
-        expert = HeuristicExpert(env)
-        
-        obs_list = []
-        action_list = []
-        
-        obs, _ = env.reset()
-        for _ in range(num_samples):
-            action = expert.select_action()
-            
-            obs_list.append(obs.copy())
-            action_list.append(action)
-            
-            obs, _, done, truncated, _ = env.step(action)
-            if done or truncated:
-                obs, _ = env.reset()
-                
-        return np.array(obs_list), np.array(action_list)
-
-    def pretrain_behavior_cloning(self, model, expert_obs, expert_actions, epochs=20, batch_size=64):
-        """PyTorch를 이용한 Policy Network 지도 학습 (행동 복제)"""
-        print("모방학습(Behavior Cloning) 사전 학습 시작...")
-        policy = model.policy
-        optimizer = optim.Adam(policy.parameters(), lr=3e-4)
-        
-        # numpy 배열을 텐서로 변환하고, 모델의 디바이스(CPU/GPU)로 이동
-        dataset = TensorDataset(
-            torch.tensor(expert_obs, dtype=torch.float32).to(policy.device),
-            torch.tensor(expert_actions).to(policy.device)
+    def generate_expert_data(
+        self,
+        env,
+        num_samples=5000,
+        expert_cls=None,
+        target_allocation=None,
+    ):
+        return BenchmarkTrainer(self).generate_expert_data(
+            env,
+            num_samples=num_samples,
+            expert_cls=expert_cls,
+            target_allocation=target_allocation,
         )
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-        
-        policy.train()
-        for epoch in range(epochs):
-            total_loss = 0.0
-            for batch_obs, batch_acts in dataloader:
-                # SB3 Policy의 evaluate_actions는 전문가 행동의 log probability를 반환함
-                _, log_prob, _ = policy.evaluate_actions(batch_obs, batch_acts)
-                
-                # NLL Loss (Negative Log Likelihood) = -log_prob의 평균 최소화
-                loss = -log_prob.mean()
-                
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                
-                total_loss += loss.item()
-                
-            print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(dataloader):.4f}")
-        print("모방학습 완료.")
+
+    def _score_benchmark_model(self, model, scenario_payloads, max_steps=24):
+        return BenchmarkTrainer(self).score_benchmark_model(
+            model,
+            scenario_payloads,
+            max_steps=max_steps,
+        )
+
+    def pretrain_behavior_cloning(
+        self,
+        model,
+        expert_obs,
+        expert_actions,
+        epochs=20,
+        batch_size=64,
+        learning_rate=3e-4,
+    ):
+        return BenchmarkTrainer(self).pretrain_behavior_cloning(
+            model,
+            expert_obs,
+            expert_actions,
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+        )
 
     def _collect_op20_metrics(self, env, products=None):
         """최종 공정(OP20) 기준 제품별·평균 계획달성률 및 장비 전환 횟수 집계."""
@@ -638,7 +484,12 @@ class RLSchedulerService:
             if expert is not None:
                 action = expert.select_action()
             elif model is not None:
-                action = self._predict_action(model, obs)
+                try:
+                    action = self._predict_action(model, obs)
+                except ValueError as exc:
+                    print(f"[경고] 모델/env 차원 불일치 - 무작위 액션으로 전환합니다. {exc}")
+                    model = None
+                    action = env.action_space.sample()
             else:
                 action = env.action_space.sample()
             obs, reward, terminated, truncated, info = env.step(action)
@@ -692,7 +543,7 @@ class RLSchedulerService:
         loader = TestDataLoader()
         datasets = datasets or loader.list_scenarios() or ['benchmark_dataset']
         print("\n" + "#" * 80)
-        print(f" [전체 벤치마크 평가 — {len(datasets)}개: {', '.join(datasets)}]")
+        print(f" [전체 벤치마크 평가 - {len(datasets)}개: {', '.join(datasets)}]")
         print("#" * 80)
         results = {}
         log_dir = os.path.join(os.getcwd(), 'logs', 'simulation_logs')
@@ -729,216 +580,50 @@ class RLSchedulerService:
         from_rule_timekey=None,
         to_rule_timekey=None,
         run_test_eval=True,
-        benchmark_dataset='benchmark_dataset',
+        benchmark_dataset="benchmark_dataset",
         benchmark_datasets=None,
         evaluate_all_benchmarks=True,
     ):
-        """RULE_TIMEKEY 구간(from~to) 또는 단일 키로 학습 후 벤치마크 데이터셋 성능 비교."""
-        snapshots = self.fetch_training_snapshots(
-            from_rule_timekey=from_rule_timekey,
-            to_rule_timekey=to_rule_timekey,
-            rule_timekey=rule_timekey,
-        )
-        bc_data = snapshots[0]
-        pad_p, pad_s = SchedulerEnv.DEFAULT_MAX_PRODS, SchedulerEnv.DEFAULT_MAX_PROCS
-        print(f"[학습 env] 10×10 패딩 (max_prods={pad_p}, max_procs={pad_s}, obs_dim={pad_p * pad_s * 8 + 2})")
-
-        def make_env():
-            if len(snapshots) == 1:
-                return Monitor(
-                    SchedulerEnv(
-                        data=snapshots[0],
-                        max_prods=pad_p,
-                        max_procs=pad_s,
-                    )
-                )
-            return Monitor(SnapshotRotationEnv(snapshots, max_prods=pad_p, max_procs=pad_s))
-
-        if n_envs > 1:
-            env = SubprocVecEnv([make_env for _ in range(n_envs)])
-        else:
-            env = DummyVecEnv([make_env])
-
-        model = PPO(
-            "MlpPolicy",
-            env,
+        return BenchmarkTrainer(self).train_model(
+            total_timesteps=total_timesteps,
+            pretrain_bc=pretrain_bc,
+            n_envs=n_envs,
             batch_size=batch_size,
             n_steps=n_steps,
+            bc_samples=bc_samples,
+            bc_epochs=bc_epochs,
             ent_coef=ent_coef,
-            verbose=1,
+            rule_timekey=rule_timekey,
+            from_rule_timekey=from_rule_timekey,
+            to_rule_timekey=to_rule_timekey,
+            run_test_eval=run_test_eval,
+            benchmark_dataset=benchmark_dataset,
+            benchmark_datasets=benchmark_datasets,
+            evaluate_all_benchmarks=evaluate_all_benchmarks,
         )
-
-        if pretrain_bc:
-            single_env = SchedulerEnv(data=bc_data, max_prods=pad_p, max_procs=pad_s)
-            expert_obs, expert_actions = self.generate_expert_data(
-                single_env, num_samples=bc_samples
-            )
-            self.pretrain_behavior_cloning(
-                model, expert_obs, expert_actions, epochs=bc_epochs
-            )
-
-        print("강화학습(PPO) 시작...")
-        callback = PlottingCallback(save_path="learning_curve.png")
-        model.learn(total_timesteps=total_timesteps, callback=callback)
-        model.save("scheduler_ppo_model")
-        print("학습 완료 및 모델 저장됨 (obs 802 = 10×10 패딩)")
-
-        benchmark_results = None
-        if run_test_eval:
-            print("\n[학습 후] 벤치마크 데이터셋 기반 성능 비교를 수행합니다...")
-            if evaluate_all_benchmarks and benchmark_datasets is None:
-                benchmark_results = self.evaluate_all_benchmark_datasets()
-            else:
-                datasets = benchmark_datasets or [benchmark_dataset]
-                if len(datasets) == 1:
-                    benchmark_results = self.evaluate_on_benchmark_dataset(benchmark_dataset=datasets[0])
-                else:
-                    benchmark_results = self.evaluate_all_benchmark_datasets(datasets=datasets)
-        return benchmark_results
 
     def _build_final_allocation_df(self, env):
-        """최종 시뮬레이션 시점의 제품/공정/장비모델별 대수 집계"""
-        rows = []
-        for p_idx, prod in enumerate(env.products):
-            if prod.startswith("PAD_PROD_") or prod.startswith("_EMPTY"):
-                continue
-            for s_idx, oper in enumerate(env.processes):
-                if oper.startswith("PAD_PROC_") or oper.startswith("_EMPTY"):
-                    continue
-                for m_idx, model in enumerate(env.models):
-                    qty = float(env.active_eqp[p_idx, s_idx, m_idx])
-                    if qty <= 0:
-                        continue
-                    rounded_qty = int(round(qty)) if np.isclose(qty, round(qty)) else round(qty, 4)
-                    rows.append({
-                        "PLAN_PROD_KEY": prod,
-                        "OPER_ID": oper,
-                        "EQP_MODEL_CD": model,
-                        "ALLOCATED_EQP_QTY": rounded_qty
-                    })
-
-        allocation_df = pd.DataFrame(
-            rows,
-            columns=["PLAN_PROD_KEY", "OPER_ID", "EQP_MODEL_CD", "ALLOCATED_EQP_QTY"]
-        )
-        if not allocation_df.empty:
-            allocation_df = allocation_df.sort_values(
-                by=["PLAN_PROD_KEY", "OPER_ID", "EQP_MODEL_CD"]
-            ).reset_index(drop=True)
-        return allocation_df
+        return build_final_allocation_df(env)
 
     def _build_last_process_achievement_df(self, env, data):
-        """제품별 마지막 공정의 계획달성률 집계"""
-        last_oper_by_prod = {}
-        wip_df = data.get('wip_info', pd.DataFrame())
-
-        if not wip_df.empty and {'PLAN_PROD_KEY', 'OPER_ID', 'OPER_SEQ'}.issubset(wip_df.columns):
-            tmp = wip_df.copy()
-            tmp['OPER_SEQ_NUM'] = pd.to_numeric(tmp['OPER_SEQ'], errors='coerce')
-            tmp = tmp.sort_values(by=['PLAN_PROD_KEY', 'OPER_SEQ_NUM', 'OPER_ID'])
-            last_rows = tmp.groupby('PLAN_PROD_KEY', as_index=False).tail(1)
-            for _, row in last_rows.iterrows():
-                last_oper_by_prod[row['PLAN_PROD_KEY']] = row['OPER_ID']
-
-        process_candidates = [proc for proc in env.processes if not proc.startswith("PAD_PROC_")]
-        for prod in [p for p in env.products if not p.startswith("PAD_PROD_") and not p.startswith("_EMPTY")]:
-            if prod in last_oper_by_prod:
-                continue
-            if not process_candidates:
-                continue
-            fallback_oper = max(
-                process_candidates,
-                key=lambda oper: int(re.search(r"\d+", oper).group()) if re.search(r"\d+", oper) else -1
-            )
-            last_oper_by_prod[prod] = fallback_oper
-
-        rows = []
-        for prod in [p for p in env.products if not p.startswith("PAD_PROD_") and not p.startswith("_EMPTY")]:
-            oper = last_oper_by_prod.get(prod)
-            if oper is None:
-                continue
-            p_idx = env.prod_idx.get(prod)
-            s_idx = env.proc_idx.get(oper)
-            if p_idx is None or s_idx is None:
-                continue
-
-            produced_qty = float(env.produced[p_idx, s_idx])
-            plan_qty = float(env.plan[p_idx, s_idx])
-            rate = (produced_qty / plan_qty * 100.0) if plan_qty > 0 else 0.0
-
-            rows.append({
-                "PLAN_PROD_KEY": prod,
-                "LAST_OPER_ID": oper,
-                "PRODUCED_QTY": round(produced_qty, 4),
-                "PLAN_QTY": round(plan_qty, 4),
-                "ACHIEVEMENT_RATE(%)": round(rate, 2)
-            })
-
-        achievement_df = pd.DataFrame(
-            rows,
-            columns=["PLAN_PROD_KEY", "LAST_OPER_ID", "PRODUCED_QTY", "PLAN_QTY", "ACHIEVEMENT_RATE(%)"]
-        )
-        if not achievement_df.empty:
-            achievement_df = achievement_df.sort_values(by=["PLAN_PROD_KEY"]).reset_index(drop=True)
-        return achievement_df
+        return build_last_process_achievement_df(env, data)
 
     def _build_allocation_pivot_df(self, allocation_df):
-        """장비모델을 컬럼으로 피벗한 장비 대수 집계"""
-        if allocation_df.empty:
-            return pd.DataFrame(columns=["PLAN_PROD_KEY", "OPER_ID"])
+        return build_allocation_pivot_df(allocation_df)
 
-        pivot_df = allocation_df.pivot_table(
-            index=["PLAN_PROD_KEY", "OPER_ID"],
-            columns="EQP_MODEL_CD",
-            values="ALLOCATED_EQP_QTY",
-            aggfunc="sum",
-            fill_value=0
-        ).reset_index()
-        pivot_df.columns.name = None
-
-        model_cols = [col for col in pivot_df.columns if col not in ["PLAN_PROD_KEY", "OPER_ID"]]
-        for col in model_cols:
-            numeric_values = pd.to_numeric(pivot_df[col], errors='coerce').fillna(0.0)
-            if np.all(np.isclose(numeric_values, np.round(numeric_values))):
-                pivot_df[col] = np.round(numeric_values).astype(int)
-            else:
-                pivot_df[col] = numeric_values.round(4)
-
-        pivot_df = pivot_df.sort_values(by=["PLAN_PROD_KEY", "OPER_ID"]).reset_index(drop=True)
-        return pivot_df
-
-    def save_inference_summary(self, rule_timekey, allocation_df, achievement_df, file_prefix='inference_summary'):
-        """요청된 핵심 결과 요약을 콘솔/엑셀로 저장"""
-        allocation_pivot_df = self._build_allocation_pivot_df(allocation_df)
-
-        print("\n[1] 제품 공정별 장비모델별 대수 할당 결과")
-        print("-" * 80)
-        if allocation_pivot_df.empty:
-            print("집계 가능한 장비 할당 결과가 없습니다.")
-        else:
-            print(allocation_pivot_df.to_string(index=False))
-        print("-" * 80)
-
-        print("\n[2] 마지막 공정 기준 제품별 계획달성률")
-        print("-" * 80)
-        if achievement_df.empty:
-            print("집계 가능한 마지막 공정 계획달성률 정보가 없습니다.")
-        else:
-            print(achievement_df.to_string(index=False))
-        print("-" * 80)
-
-        log_dir = os.path.join(os.getcwd(), 'logs', 'simulation_logs')
-        os.makedirs(log_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_timekey = str(rule_timekey).replace(" ", "_")
-        file_path = os.path.join(log_dir, f"{file_prefix}_{safe_timekey}_{timestamp}.xlsx")
-
-        with pd.ExcelWriter(file_path) as writer:
-            allocation_pivot_df.to_excel(writer, sheet_name='EQP_ALLOCATION_PIVOT', index=False)
-            allocation_df.to_excel(writer, sheet_name='EQP_ALLOCATION', index=False)
-            achievement_df.to_excel(writer, sheet_name='LAST_OPER_ACH', index=False)
-
-        print(f"[성공] 추론 요약 리포트가 엑셀로 저장되었습니다: {file_path}")
+    def save_inference_summary(
+        self,
+        rule_timekey,
+        allocation_df,
+        achievement_df,
+        file_prefix="inference_summary",
+    ):
+        return save_inference_summary(
+            rule_timekey,
+            allocation_df,
+            achievement_df,
+            file_prefix=file_prefix,
+        )
 
     def run_inference(self, rule_timekey=None):
         """추론 수행.
@@ -969,7 +654,12 @@ class RLSchedulerService:
 
         while not done:
             if model:
-                action = self._predict_action(model, obs)
+                try:
+                    action = self._predict_action(model, obs)
+                except ValueError as exc:
+                    print(f"[경고] 모델/env 차원 불일치 - 무작위 액션으로 전환합니다. {exc}")
+                    model = None
+                    action = env.action_space.sample()
             else:
                 action = env.action_space.sample()
             
@@ -1005,51 +695,18 @@ class RLSchedulerService:
         return results
 
     def save_production_logs(self, logs):
-        if not logs:
-            return
-        df = pd.DataFrame(logs)
-        print(f"\n[시뮬레이션 생산 로그] 총 {len(df)}건")
-        print("-" * 60)
-        print(df.to_string(index=False))
-        print("-" * 60)
-        
-        # Save to Excel
-        log_dir = os.path.join(os.getcwd(), 'logs', 'simulation_logs')
-        os.makedirs(log_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_path = os.path.join(log_dir, f'production_log_{timestamp}.xlsx')
-        df.to_excel(file_path, index=False)
-        print(f"[성공] 생산 로그가 엑셀로 저장되었습니다: {file_path}")
+        return save_production_logs(logs)
 
     def save_results(self, results):
-        if not results:
-            print("\n[장비 전환 액션] 도출된 전환 액션이 없습니다.")
-            return
-            
-        df = pd.DataFrame(results)
-        print(f"\n[장비 전환 액션] 총 {len(df)}건 도출")
-        print("-" * 80)
-        print(df.to_string(index=False))
-        print("-" * 80)
-        
-        # Save to Excel
-        log_dir = os.path.join(os.getcwd(), 'logs', 'simulation_logs')
-        os.makedirs(log_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_path = os.path.join(log_dir, f'action_log_{timestamp}.xlsx')
-        df.to_excel(file_path, index=False)
-        print(f"[성공] 액션 로그가 엑셀로 저장되었습니다: {file_path}")
+        return save_action_results(results)
 
-    def run_benchmark_evaluation(
-        self, total_timesteps=10000, retrain=True, datasets=None,
-    ):
-        """벤치마크 Optimal vs 휴리스틱 vs RL (선택적 학습). test/data CSV 기준."""
+    def run_benchmark_evaluation(self, datasets=None, model_path='scheduler_ppo_model', max_steps=24):
+        """벤치마크 CSV 데이터셋으로 저장된 모델을 validation/evaluation만 수행."""
         print("\n" + "=" * 80)
-        print(" [벤치마크 데이터셋 평가 (Optimal vs Heuristic vs RL)]")
+        print(" [벤치마크 데이터셋 검증 (Optimal vs Heuristic vs RL)]")
         print("=" * 80)
-        if retrain:
-            print("\n[학습] PPO 학습 후 벤치마크 평가...")
-            self.train_model(
-                total_timesteps=total_timesteps, pretrain_bc=True, n_envs=4, run_test_eval=False,
-            )
-        return self.evaluate_all_benchmark_datasets(datasets=datasets)
+        return self.evaluate_all_benchmark_datasets(
+            datasets=datasets,
+            model_path=model_path,
+            max_steps=max_steps,
+        )

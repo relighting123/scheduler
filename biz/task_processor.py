@@ -64,8 +64,8 @@ class TaskProcessor:
         elif action in ("benchmark_evaluation", "benchmark"):
             logger.info("Starting benchmark dataset evaluation...")
             rl_service = RLSchedulerService(db_manager=self.repo)
-            timesteps = params.get("total_timesteps", 10000)
-            rl_service.run_benchmark_evaluation(total_timesteps=timesteps)
+            datasets = params.get("benchmark_datasets")
+            rl_service.run_benchmark_evaluation(datasets=datasets)
             return True
         else:
             logger.warning(f"Unknown action: {action}")
