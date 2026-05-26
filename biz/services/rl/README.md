@@ -1,51 +1,31 @@
 # Scheduler RL Structure
 
-This package keeps policy logic, environment dynamics, training, evaluation, and output persistence separate.
+```
+biz/services/rl/
+  env/          # Gymnasium environments (observation, action, reward)
+  train/        # PPO training, behavior cloning, experts
+  validation/   # Benchmark CSV evaluation (no training)
+  infer/        # DB inference outputs (RTD, RTS, Excel)
+  utils/        # DB access, DDL, env factory
+```
+
+`biz/services/rl_scheduler_service.py` is the thin endpoint facade used by the app.
 
 ## Where to change behavior
 
-- `env/scheduler_env.py`
-  - Observation/state vector construction
-  - Action decoding and transition logic
-  - Reward calculation
-  - Equipment movement and production simulation
+- `env/scheduler_env.py` — observation, action, reward, simulation
+- `train/expert.py` — heuristic/optimal experts and BC labels
+- `train/trainer.py` — `train_model`, behavior cloning, PPO
+- `validation/benchmark_evaluator.py` — benchmark simulation and reports
+- `infer/outputs.py` — inference summary and action/production logs
+- `infer/rts_output.py` — RTS_RSLT_MAS rows and DB persistence
+- `utils/data_access.py` — DB snapshot fetch and RULE_TIMEKEY filtering
+- `utils/db_schema.py` — input/output table DDL
 
-- `expert.py`
-  - Heuristic and optimal expert action selection
-  - Behavior cloning labels
+## Training vs validation vs inference
 
-- `training.py`
-  - DB snapshot training flow (`train_model`)
-  - Behavior cloning pretraining
-  - PPO fine-tuning
-  - Benchmark scoring used only for validation/model comparison
+- `train_model(...)` trains from DB snapshots (`RULE_TIMEKEY` range).
+- `run_benchmark_evaluation(...)` / `evaluate_on_benchmark_dataset(...)` use CSV data under `test/data` only (validation).
+- `run_inference(...)` runs the saved model on a DB snapshot (infer).
 
-- `benchmark_evaluator.py`
-  - Benchmark simulation and comparison reports
-
-- `inference_outputs.py`
-  - Inference summary tables
-  - Action and production log Excel output
-
-- `rts_output.py`
-  - RTS_RSLT_MAS row conversion
-  - RTS_RSLT_MAS Excel and DB persistence
-
-- `../rl_scheduler_service.py`
-  - Public orchestration API used by the app
-  - DB fetch/init helpers
-  - Thin compatibility wrappers around the modules above
-
-## Training vs inference data
-
-- `train_model(...)` trains from DB snapshots selected by `RULE_TIMEKEY`, `from_rule_timekey`, or `to_rule_timekey`.
-- Benchmark CSV scenarios under `test/data` are validation/evaluation data only.
-- `run_inference(...)` fetches DB data by `RULE_TIMEKEY` and runs the saved `scheduler_ppo_model`.
-- `evaluate_on_benchmark_dataset(...)` and `evaluate_all_benchmark_datasets(...)` run benchmark CSV evaluation.
-- `run_benchmark_evaluation(...)` never trains; it only validates the saved model.
-
-The saved model path is shared by default (`scheduler_ppo_model`), so train with `train_model(...)` before inference or benchmark validation.
-
-## Design rule
-
-Keep reward, action, and observation changes inside `env/scheduler_env.py` unless the data contract itself changes. Keep file output, Excel, and DB persistence outside the environment.
+The default model path is `scheduler_ppo_model`.

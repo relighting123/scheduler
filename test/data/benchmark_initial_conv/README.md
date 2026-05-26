@@ -21,7 +21,7 @@
 ## 로드
 
 ```python
-from biz.services.rl.test_data_loader import TestDataLoader
+from biz.services.rl.validation.test_data_loader import TestDataLoader
 data = TestDataLoader().load_for_env("benchmark_initial_conv")
 ```
 
