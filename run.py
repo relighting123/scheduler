@@ -72,6 +72,7 @@ def main():
             print(f"  학습 스냅샷: {args.timekey}")
         else:
             print("  학습 스냅샷: DB MAX(RULE_TIMEKEY) 또는 기본값")
+        evaluate_all = not args.single_benchmark
         rl_service.train_model(
             total_timesteps=args.steps,
             rule_timekey=args.timekey,
@@ -79,6 +80,8 @@ def main():
             to_rule_timekey=args.to_timekey,
             run_test_eval=not args.no_test_eval,
             benchmark_dataset=args.benchmark_dataset,
+            evaluate_all_benchmarks=evaluate_all,
+            benchmark_datasets=None if evaluate_all else [args.benchmark_dataset],
         )
         print("학습 및 벤치마크 데이터셋 평가가 완료되었습니다.")
 

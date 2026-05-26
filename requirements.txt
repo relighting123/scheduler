@@ -8,3 +8,4 @@ gymnasium
 oracledb
 pyyaml
 matplotlib
+openpyxl

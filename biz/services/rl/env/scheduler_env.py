@@ -700,7 +700,7 @@ class SchedulerEnv(gym.Env):
         
         return self._get_obs(), float(reward), terminated, False, {'transfers': transfers}
 
-    def print_final_summary(self, method_name: str = "simulation"):
+    def print_final_summary(self, method_name: str = "simulation", save_excel: bool = True):
         """최종 기준에서 제품별 공정별 장비 할당대수와 계획 달성률/가동률 정보를 출력하고 엑셀 파일로 저장합니다."""
         print("\n" + "="*100)
         print(f" [최종 장비 할당 및 실적/가동률 요약 리포트 - {method_name.upper()}]")
@@ -781,7 +781,7 @@ class SchedulerEnv(gym.Env):
         print("="*100 + "\n")
 
         # Save to Excel
-        if summary_data:
+        if summary_data and save_excel:
             df_summary = pd.DataFrame(summary_data)
             df_logs = pd.DataFrame()
             if hasattr(self, 'production_logs') and self.production_logs:
