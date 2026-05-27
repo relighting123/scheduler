@@ -87,7 +87,8 @@ def test_rts_hourly_rows_per_equipment():
         assert eqp_rows[0]["START_TM"] == "20251020070000"
         assert eqp_rows[-1]["START_TM"] == "20251021060000"
         assert eqp_rows[0]["END_TM"] == "20251020080000"
-        assert all(r["SEQ_NO"] == 1 for r in eqp_rows), "no reassignment in this scenario"
+        seq_nos = [r["SEQ_NO"] for r in eqp_rows]
+        assert seq_nos == list(range(1, 25)), f"{eqp_id}: SEQ_NO should be 1..24, got {seq_nos}"
         total_prod = sum(float(r["PROD_QTY"]) for r in eqp_rows)
         assert total_prod > 0
         assert float(eqp_rows[-1]["CUM_PROD_QTY"]) == total_prod

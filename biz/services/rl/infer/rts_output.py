@@ -65,6 +65,7 @@ def _append_hourly_rts_row(
     unit,
     seg,
     step_index,
+    seq_no,
     max_steps,
     data,
     crt_user_id,
@@ -83,7 +84,7 @@ def _append_hourly_rts_row(
         hour_qty = float(seg.produced_qty) / span if int(seg.start_step) == step_index else 0.0
     rows.append({
         "RULE_TIMEKEY": str(rule_timekey),
-        "SEQ_NO": seg.seq_no,
+        "SEQ_NO": int(seq_no),
         "EQP_ID": unit.eqp_id,
         "EQP_MODEL_CD": unit.eqp_model_cd,
         "BATCH_ID": seg.batch_id,
@@ -123,6 +124,7 @@ def build_rts_rslt_mas_rows(env, data, rule_timekey, crt_user_id="SYSTEM"):
                 unit=unit,
                 seg=seg,
                 step_index=step_index,
+                seq_no=step_index + 1,
                 max_steps=max_steps,
                 data=data,
                 crt_user_id=crt_user_id,
@@ -152,6 +154,7 @@ def build_rts_rslt_mas_rows(env, data, rule_timekey, crt_user_id="SYSTEM"):
                         unit=unit,
                         seg=seg,
                         step_index=step_index,
+                        seq_no=step_index + 1,
                         max_steps=max_steps,
                         data=data,
                         crt_user_id=crt_user_id,
@@ -172,7 +175,7 @@ def build_rts_rslt_mas_rows(env, data, rule_timekey, crt_user_id="SYSTEM"):
                 unit_cum += per_hour
                 rows.append({
                     "RULE_TIMEKEY": str(rule_timekey),
-                    "SEQ_NO": 1,
+                    "SEQ_NO": step_index + 1,
                     "EQP_ID": unit.eqp_id,
                     "EQP_MODEL_CD": unit.eqp_model_cd,
                     "BATCH_ID": unit.batch_id,

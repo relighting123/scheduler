@@ -78,6 +78,6 @@ def create_output_tables(db):
             CUM_PROD_QTY VARCHAR2(50),
             CRT_USET_ID VARCHAR2(50),
             CRT_TM VARCHAR2(14),
-            CONSTRAINT PK_RTS_RSLT_MAS PRIMARY KEY (RULE_TIMEKEY, EQP_ID, START_TM)
+            CONSTRAINT PK_RTS_RSLT_MAS PRIMARY KEY (RULE_TIMEKEY, EQP_ID, SEQ_NO)
         )
     """)
