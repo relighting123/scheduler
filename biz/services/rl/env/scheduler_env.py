@@ -106,12 +106,16 @@ class SchedulerEnv(gym.Env):
         self.proc_idx = {p: i for i, p in enumerate(self.processes)}
         self.model_idx = {m: i for i, m in enumerate(self.models)}
 
+        # 제품별 공정 수순: next_proc_idx[p, s] = 다음 공정 인덱스 (-1이면 마지막 공정)
+        self.next_proc_idx = np.full((self.num_prods, self.num_procs), -1, dtype=int)
+
         wip_df = self.data.get('wip_info', pd.DataFrame())
         if not wip_df.empty:
             for _, row in wip_df.iterrows():
                 p, s = row['PLAN_PROD_KEY'], row['OPER_ID']
                 if p in self.prod_idx and s in self.proc_idx:
                     self.wip[self.prod_idx[p], self.proc_idx[s]] += float(row['WIP_QTY'])
+            self._build_proc_sequence(wip_df)
 
         plan_df = self.data.get('plan_info', pd.DataFrame())
         if not plan_df.empty:
@@ -286,8 +290,9 @@ class SchedulerEnv(gym.Env):
                 self.produced[p, s] += actual_produce
                 step_production += actual_produce
                 self.wip[p, s] -= actual_produce
-                if s < self.num_procs - 1:
-                    self.wip[p, s + 1] += actual_produce
+                next_s = self.next_proc_idx[p, s]
+                if next_s >= 0:
+                    self.wip[p, next_s] += actual_produce
 
                 plan_qty = self.plan[p, s]
                 cum_produced = self.produced[p, s]
@@ -465,6 +470,31 @@ class SchedulerEnv(gym.Env):
             self.processes.append(f"PAD_PROC_{len(self.processes)}")
         while len(self.models) < self.max_models:
             self.models.append(f"PAD_MODEL_{len(self.models)}")
+
+    def _build_proc_sequence(self, wip_df: pd.DataFrame):
+        """OPER_SEQ 기반으로 제품별 다음 공정 인덱스(next_proc_idx)를 구성한다.
+
+        WIP_INFO의 OPER_SEQ는 제품(PLAN_PROD_KEY)마다 독립적으로 정의되므로,
+        제품별로 그룹화한 뒤 OPER_SEQ 오름차순으로 공정 수순을 결정한다.
+        OPER_SEQ 컬럼이 없으면 아무 작업도 하지 않는다(next_proc_idx는 전부 -1).
+        """
+        if 'OPER_SEQ' not in wip_df.columns:
+            return
+        for prod_name, group in wip_df.groupby('PLAN_PROD_KEY'):
+            if prod_name not in self.prod_idx:
+                continue
+            p = self.prod_idx[prod_name]
+            ordered = (
+                group[['OPER_ID', 'OPER_SEQ']]
+                .drop_duplicates('OPER_ID')
+                .assign(seq_num=lambda df: pd.to_numeric(df['OPER_SEQ'], errors='coerce'))
+                .sort_values('seq_num')
+            )
+            proc_order = [r for r in ordered['OPER_ID'] if r in self.proc_idx]
+            for i in range(len(proc_order) - 1):
+                s_cur = self.proc_idx[proc_order[i]]
+                s_next = self.proc_idx[proc_order[i + 1]]
+                self.next_proc_idx[p, s_cur] = s_next
 
     def _load_guidance_target_allocation(self):
         if not self.guidance_target_allocation:
