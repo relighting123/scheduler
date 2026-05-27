@@ -29,6 +29,7 @@ class AssignmentSegment:
     start_step: int = 0
     end_step: Optional[int] = None
     produced_qty: float = 0.0
+    hourly_produced: Dict[int, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -234,7 +235,10 @@ class SchedulerEnv(gym.Env):
             return
         unit.produced_qty += qty
         if unit.assignment_history:
-            unit.assignment_history[-1].produced_qty += qty
+            seg = unit.assignment_history[-1]
+            seg.produced_qty += qty
+            step_key = int(self.current_step)
+            seg.hourly_produced[step_key] = seg.hourly_produced.get(step_key, 0.0) + qty
 
     def _clear_unit_location(self, unit: EquipmentUnit, log_assignment: bool = False):
         """슬롯에서 빼기만 할 때는 IDLE 로그 생략(CONV·pending 이동 직전)."""
@@ -395,6 +399,15 @@ class SchedulerEnv(gym.Env):
             if unit.assignment_history and unit.assignment_history[-1].end_step is None:
                 unit.assignment_history[-1].end_step = end_step
 
+    def _segment_covering_step(
+        self, unit: EquipmentUnit, step: int, max_steps: int
+    ) -> Optional[AssignmentSegment]:
+        for seg in unit.assignment_history:
+            end_step = seg.end_step if seg.end_step is not None else max_steps
+            if int(seg.start_step) <= step < int(end_step):
+                return seg
+        return None
+
     def iter_rts_assignment_records(self) -> List[Tuple[EquipmentUnit, AssignmentSegment]]:
         """RTS_RSLT_MAS용 (장비, 장비별 SEQ 할당 구간) 목록."""
         self.finalize_assignment_history()
@@ -404,6 +417,24 @@ class SchedulerEnv(gym.Env):
                 self._sync_unit_assignment_log(unit)
             for seg in unit.assignment_history:
                 records.append((unit, seg))
+        return records
+
+    def iter_rts_hourly_records(
+        self, max_steps: Optional[int] = None
+    ) -> List[Tuple[EquipmentUnit, AssignmentSegment, int]]:
+        """RTS_RSLT_MAS용 (장비, 해당 시각 할당 구간, slot step) — 장비×시간(1hr) 단위."""
+        slot_count = int(max_steps if max_steps is not None else self.max_steps)
+        self.finalize_assignment_history()
+        records: List[Tuple[EquipmentUnit, AssignmentSegment, int]] = []
+        for unit in self.get_all_equipment_units():
+            if not unit.assignment_history:
+                self._sync_unit_assignment_log(unit)
+                self.finalize_assignment_history()
+            for step in range(slot_count):
+                seg = self._segment_covering_step(unit, step, slot_count)
+                if seg is None:
+                    continue
+                records.append((unit, seg, step))
         return records
 
 
