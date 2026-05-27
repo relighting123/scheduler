@@ -44,61 +44,100 @@ def step_to_slot_tm(base_dt, step_index: int) -> str:
     return (base_dt + timedelta(hours=int(step_index))).strftime("%Y%m%d%H%M%S")
 
 
-def segment_slot_time_range(data, seg, max_steps: int, rule_timekey=None):
-    """Resolve START_TM and END_TM for one assignment segment."""
-    base_dt = resolve_simulation_base_datetime(data, rule_timekey=rule_timekey)
-    start_step = int(seg.start_step)
-    end_step = seg.end_step
-    if end_step is None:
-        end_step = min(start_step + 1, max_steps)
-    else:
-        end_step = int(end_step)
-    if end_step <= start_step:
-        end_step = start_step + 1
-    return step_to_slot_tm(base_dt, start_step), step_to_slot_tm(base_dt, end_step)
+def product_key_from_attr(plan_prod_attr_val: str) -> str:
+    """Merge key: same PLAN_PROD_KEY → one SEQ; IDLE/CONV are separate keys."""
+    attr = str(plan_prod_attr_val or "").strip()
+    if not attr or attr in ("IDLE", "CONV"):
+        return attr or "IDLE"
+    if "|" in attr:
+        return attr.split("|", 1)[0].strip()
+    return attr
+
+
+def merge_assignment_segments_by_product(segments, max_steps: int):
+    """Merge consecutive assignment segments with the same product into one row group."""
+    merged = []
+    for seg in segments:
+        key = product_key_from_attr(seg.plan_prod_attr_val)
+        end_step = int(seg.end_step) if seg.end_step is not None else int(max_steps)
+        start_step = int(seg.start_step)
+        if end_step <= start_step:
+            end_step = start_step + 1
+
+        if merged and merged[-1]["product_key"] == key:
+            group = merged[-1]
+            group["end_step"] = max(group["end_step"], end_step)
+            group["produced_qty"] += float(getattr(seg, "produced_qty", 0.0) or 0.0)
+            group["plan_prod_attr_val"] = seg.plan_prod_attr_val
+            if getattr(seg, "batch_id", None):
+                group["batch_id"] = seg.batch_id
+        else:
+            merged.append(
+                {
+                    "product_key": key,
+                    "start_step": start_step,
+                    "end_step": end_step,
+                    "produced_qty": float(getattr(seg, "produced_qty", 0.0) or 0.0),
+                    "plan_prod_attr_val": seg.plan_prod_attr_val,
+                    "batch_id": getattr(seg, "batch_id", None),
+                }
+            )
+    return merged
 
 
 def build_rts_rslt_mas_rows(env, data, rule_timekey, crt_user_id="SYSTEM"):
-    """Convert final env assignment state to RTS_RSLT_MAS output rows."""
+    """Convert final env state to RTS_RSLT_MAS rows (장비별·제품 단위 병합 구간)."""
     fallback_start, fallback_end = resolve_simulation_time_range(data)
     max_steps = int(getattr(env, "max_steps", 24))
+    base_dt = resolve_simulation_base_datetime(data, rule_timekey=rule_timekey)
     crt_tm = datetime.now().strftime("%Y%m%d%H%M%S")
     rows = []
+
+    if hasattr(env, "finalize_assignment_history"):
+        env.finalize_assignment_history()
 
     all_units = []
     if hasattr(env, "get_all_equipment_units"):
         all_units = env.get_all_equipment_units()
-    elif hasattr(env, "get_deployed_equipment_units"):
+
+    if all_units and hasattr(all_units[0], "assignment_history"):
+        for unit in all_units:
+            segments = list(getattr(unit, "assignment_history", []) or [])
+            if not segments and hasattr(env, "_sync_unit_assignment_log"):
+                env._sync_unit_assignment_log(unit)
+                env.finalize_assignment_history()
+                segments = list(unit.assignment_history or [])
+
+            merged_groups = merge_assignment_segments_by_product(segments, max_steps)
+            unit_cum = 0.0
+            for seq_no, group in enumerate(merged_groups, start=1):
+                unit_cum += group["produced_qty"]
+                rows.append({
+                    "RULE_TIMEKEY": str(rule_timekey),
+                    "SEQ_NO": seq_no,
+                    "EQP_ID": unit.eqp_id,
+                    "EQP_MODEL_CD": unit.eqp_model_cd,
+                    "BATCH_ID": group["batch_id"],
+                    "START_TM": step_to_slot_tm(base_dt, group["start_step"]),
+                    "END_TM": step_to_slot_tm(base_dt, group["end_step"]),
+                    "PLAN_PROD_ATTR_VAL": group["plan_prod_attr_val"],
+                    "PROD_QTY": str(round(group["produced_qty"], 4)),
+                    "CUM_PROD_QTY": str(round(unit_cum, 4)),
+                    "CRT_USET_ID": crt_user_id,
+                    "CRT_TM": crt_tm,
+                })
+        if rows:
+            return rows
+
+    if hasattr(env, "get_deployed_equipment_units"):
         all_units = env.get_deployed_equipment_units()
 
-    if hasattr(env, "iter_rts_assignment_records"):
-        records = env.iter_rts_assignment_records()
-        for unit, seg in records:
-            seg_start, seg_end = segment_slot_time_range(
-                data, seg, max_steps, rule_timekey=rule_timekey
-            )
-            prod_qty_str = str(round(float(seg.produced_qty), 4))
-            cum_qty_str = str(round(float(unit.produced_qty), 4))
-            rows.append({
-                "RULE_TIMEKEY": str(rule_timekey),
-                "SEQ_NO": seg.seq_no,
-                "EQP_ID": unit.eqp_id,
-                "EQP_MODEL_CD": unit.eqp_model_cd,
-                "BATCH_ID": seg.batch_id,
-                "START_TM": seg_start,
-                "END_TM": seg_end,
-                "PLAN_PROD_ATTR_VAL": seg.plan_prod_attr_val,
-                "PROD_QTY": prod_qty_str,
-                "CUM_PROD_QTY": cum_qty_str,
-                "CRT_USET_ID": crt_user_id,
-                "CRT_TM": crt_tm,
-            })
-        return rows
-
     if all_units:
-        base_dt = resolve_simulation_base_datetime(data, rule_timekey)
+        per_hour = float(sum(getattr(u, "produced_qty", 0.0) for u in all_units) or 0.0) / max(
+            len(all_units) * max_steps, 1
+        )
         for unit in all_units:
-            prod_qty_str = str(round(float(unit.produced_qty), 4))
+            attr = getattr(unit, "plan_prod_attr_val", None) or ""
             rows.append({
                 "RULE_TIMEKEY": str(rule_timekey),
                 "SEQ_NO": 1,
@@ -107,9 +146,9 @@ def build_rts_rslt_mas_rows(env, data, rule_timekey, crt_user_id="SYSTEM"):
                 "BATCH_ID": unit.batch_id,
                 "START_TM": step_to_slot_tm(base_dt, 0),
                 "END_TM": step_to_slot_tm(base_dt, max_steps),
-                "PLAN_PROD_ATTR_VAL": unit.plan_prod_attr_val or "",
-                "PROD_QTY": prod_qty_str,
-                "CUM_PROD_QTY": prod_qty_str,
+                "PLAN_PROD_ATTR_VAL": attr,
+                "PROD_QTY": str(round(float(getattr(unit, "produced_qty", 0.0) or per_hour * max_steps), 4)),
+                "CUM_PROD_QTY": str(round(float(getattr(unit, "produced_qty", 0.0) or per_hour * max_steps), 4)),
                 "CRT_USET_ID": crt_user_id,
                 "CRT_TM": crt_tm,
             })
