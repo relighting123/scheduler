@@ -1,8 +1,8 @@
-"""DDL for scheduler RL input/output tables."""
+"""스케줄러 RL 입력/출력 테이블 DDL."""
 
 
 def create_learning_tables(db):
-    """Create the seven RULE_TIMEKEY-scoped input tables."""
+    """7개 RULE_TIMEKEY 기반 입력 테이블 생성."""
     db.execute("""
         CREATE TABLE WIP_INFO (
             RULE_TIMEKEY VARCHAR2(14), PLAN_PROD_KEY VARCHAR2(50),
@@ -49,7 +49,7 @@ def create_learning_tables(db):
 
 
 def create_output_tables(db):
-    """Create inference output tables."""
+    """추론 결과 출력 테이블 생성."""
     db.execute("""
         CREATE TABLE RTD_CONV_INF (
             RULE_TIMEKEY VARCHAR2(20),

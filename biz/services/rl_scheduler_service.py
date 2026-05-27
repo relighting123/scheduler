@@ -1,10 +1,10 @@
 """Thin endpoint facade for scheduler RL operations."""
 
+from biz.services.rl.db.data_access import DEFAULT_RULE_TIMEKEY, TrainingDataAccess
+from biz.services.rl.db.factory import SchedulerEnvFactory
+from biz.services.rl.db.table_schema import create_learning_tables, create_output_tables
 from biz.services.rl.infer.inference_runner import InferenceRunner
 from biz.services.rl.train.trainer import BenchmarkTrainer
-from biz.services.rl.utils.data_access import DEFAULT_RULE_TIMEKEY, TrainingDataAccess
-from biz.services.rl.utils.db_schema import create_learning_tables, create_output_tables
-from biz.services.rl.utils.env_factory import SchedulerEnvFactory
 from biz.services.rl.validation.benchmark_evaluator import BenchmarkEvaluator
 
 

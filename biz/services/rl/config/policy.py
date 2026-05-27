@@ -1,4 +1,8 @@
-"""Load observation/reward policy from YAML (defaults if file missing)."""
+"""YAML 파일에서 관측 정규화 스케일과 보상 가중치를 로드한다.
+
+파일이 없을 경우 코드에 내장된 기본값을 사용하므로,
+YAML을 편집하는 것만으로 시뮬레이터 코드를 건드리지 않고 튜닝할 수 있다.
+"""
 from __future__ import annotations
 
 import os
@@ -10,7 +14,7 @@ import yaml
 from biz.services.rl.env.observation import ObservationNormConfig
 from biz.services.rl.env.reward import RewardConfig
 
-_DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "env_policy_config.yaml")
+_DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "policy_config.yaml")
 
 
 @dataclass(frozen=True)

@@ -1,13 +1,13 @@
-"""Scheduler environment construction and policy helpers."""
+"""SchedulerEnv 인스턴스 생성 및 추론 헬퍼."""
 
 import numpy as np
 
-from biz.services.rl.env.env_schema import load_env_schema
+from biz.services.rl.config.schema import load_env_schema
 from biz.services.rl.env.scheduler_env import SchedulerEnv
 
 
 def predict_action(model, obs):
-    """Run deterministic PPO predict with observation shape validation."""
+    """PPO 모델로 결정적 액션을 예측한다. 관측 차원이 맞지 않으면 예외를 발생시킨다."""
     obs = np.asarray(obs, dtype=np.float32).reshape(-1)
     expected = model.observation_space.shape
     if obs.shape != expected:
@@ -20,7 +20,7 @@ def predict_action(model, obs):
 
 
 def collect_op20_metrics(env, products=None):
-    """Aggregate plan achievement at OP20 and transfer counts."""
+    """OP20 공정의 제품별 계획 달성률을 집계한다."""
     if products is None:
         products = ["P1", "P2", "P3"]
     results = {}
@@ -40,7 +40,7 @@ def collect_op20_metrics(env, products=None):
 
 
 class SchedulerEnvFactory:
-    """Build SchedulerEnv instances with optional fixed schema from training."""
+    """학습 시 저장한 스키마를 적용해 추론·벤치마크용 SchedulerEnv를 생성한다."""
 
     def __init__(self):
         self.active_env_schema = None
