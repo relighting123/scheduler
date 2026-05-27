@@ -1,7 +1,7 @@
 """Unit checks for separated observation/reward policy modules."""
 import numpy as np
 
-from biz.services.rl.env.env_policy import load_env_policy
+from biz.services.rl.config.policy import load_env_policy
 from biz.services.rl.env.observation import build_observation_from_env, observation_dim
 from biz.services.rl.env.reward import RewardConfig, RewardStepContext, compute_reward
 from biz.services.rl.env.scheduler_env import SchedulerEnv

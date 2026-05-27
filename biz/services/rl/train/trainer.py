@@ -11,7 +11,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from torch.utils.data import DataLoader, TensorDataset
 
-from biz.services.rl.env.env_schema import compute_canonical_schema, save_env_schema
+from biz.services.rl.config.schema import compute_canonical_schema, save_env_schema
 from biz.services.rl.env.scheduler_env import SchedulerEnv
 from biz.services.rl.env.snapshot_rotation_env import SnapshotRotationEnv
 from biz.services.rl.train.callbacks import PlottingCallback

@@ -1,4 +1,8 @@
-"""학습 스냅샷 간 고정 obs/action 차원을 위한 엔티티 스키마 유틸."""
+"""학습 스냅샷 간 obs/action 차원을 고정하기 위한 엔티티 스키마 유틸.
+
+여러 RULE_TIMEKEY 스냅샷에 걸쳐 제품·공정·모델 목록의 합집합을 구하고,
+JSON 파일로 저장·복원함으로써 학습 env와 추론 env의 차원을 동일하게 유지한다.
+"""
 import json
 import os
 from typing import Dict, List, Optional, Tuple

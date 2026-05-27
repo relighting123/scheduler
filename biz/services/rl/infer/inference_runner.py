@@ -12,7 +12,7 @@ from biz.services.rl.infer.outputs import (
     save_production_logs,
 )
 from biz.services.rl.infer.rts_output import save_rts_rslt_mas
-from biz.services.rl.utils.env_factory import predict_action
+from biz.services.rl.db.factory import predict_action
 
 
 class InferenceRunner:

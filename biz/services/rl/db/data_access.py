@@ -1,4 +1,4 @@
-"""DB snapshot fetch and RULE_TIMEKEY filtering for training and inference."""
+"""학습 및 추론용 DB 스냅샷 조회와 RULE_TIMEKEY 필터링."""
 
 import pandas as pd
 
@@ -6,7 +6,7 @@ DEFAULT_RULE_TIMEKEY = "20251020070000"
 
 
 class TrainingDataAccess:
-    """Load and filter scheduler training snapshots from the database."""
+    """DB에서 스케줄러 학습 스냅샷을 로드하고 필터링한다."""
 
     def __init__(self, db_manager, default_rule_timekey=DEFAULT_RULE_TIMEKEY):
         self.db = db_manager
