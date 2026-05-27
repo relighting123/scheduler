@@ -2,7 +2,7 @@
 
 ```
 biz/services/rl/
-  env/          # Gymnasium environments (observation, action, reward)
+  env/          # Gymnasium environments + policy modules
   train/        # PPO training, behavior cloning, experts
   validation/   # Benchmark CSV evaluation (no training)
   infer/        # DB inference outputs (RTD, RTS, Excel)
@@ -13,7 +13,10 @@ biz/services/rl/
 
 ## Where to change behavior
 
-- `env/scheduler_env.py` — observation, action, reward, simulation
+- `env/env_policy_config.yaml` — observation scales and reward weights (no code edit)
+- `env/observation.py` — observation vector layout and normalization
+- `env/reward.py` — reward terms and terminal bonuses
+- `env/scheduler_env.py` — action space and simulation dynamics
 - `train/expert.py` — heuristic/optimal experts and BC labels
 - `train/trainer.py` — `train_model`, behavior cloning, PPO
 - `validation/benchmark_evaluator.py` — benchmark simulation and reports

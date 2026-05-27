@@ -7,7 +7,14 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 import os
 
+from biz.services.rl.env.env_policy import load_observation_and_reward_config
 from biz.services.rl.env.env_schema import discover_entities_from_data
+from biz.services.rl.env.observation import (
+    ObservationNormConfig,
+    build_observation_from_env,
+    observation_dim,
+)
+from biz.services.rl.env.reward import RewardConfig, RewardStepContext, compute_reward
 
 
 @dataclass
@@ -77,9 +84,15 @@ class SchedulerEnv(gym.Env):
         fixed_processes: Optional[List[str]] = None,
         fixed_models: Optional[List[str]] = None,
         guidance_target_allocation: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
+        env_policy_config_path: Optional[str] = None,
+        observation_norm: Optional[ObservationNormConfig] = None,
+        reward_config: Optional[RewardConfig] = None,
     ):
         super(SchedulerEnv, self).__init__()
         self.data = data
+        loaded_obs, loaded_reward = load_observation_and_reward_config(env_policy_config_path)
+        self.observation_norm = observation_norm or loaded_obs
+        self.reward_config = reward_config or loaded_reward
         self.max_prods = max_prods
         self.max_procs = max_procs
         self.max_models = max_models
@@ -107,11 +120,7 @@ class SchedulerEnv(gym.Env):
 
         self.action_space = spaces.Discrete(self.num_prods * self.num_procs * self.num_models + 1)
         
-        self.obs_dim = (
-            self.num_prods * self.num_procs * 8
-            + self.num_prods * self.num_procs * self.num_models * 5
-            + 2
-        )
+        self.obs_dim = observation_dim(self.num_prods, self.num_procs, self.num_models)
         self.observation_space = spaces.Box(low=0, high=1000, shape=(self.obs_dim,), dtype=np.float32)
 
         self.reset()
@@ -522,41 +531,7 @@ class SchedulerEnv(gym.Env):
             self._sync_unit_assignment_log(unit)
 
     def _get_obs(self):
-        # Simplified normalization for observation
-        wip_norm = (self.wip / 1000.0).flatten()
-        active_norm = (self.active_eqp.sum(axis=2) / 100.0).flatten()
-        target_norm = (self.target_eqp.sum(axis=2) / 100.0).flatten()
-        co_norm = np.zeros((self.num_prods, self.num_procs)).flatten() # simplified
-        produced_ratio = (self.produced / (self.plan + 1e-6)).flatten()
-        
-        st_per_pp = np.zeros((self.num_prods, self.num_procs))
-        for i in range(self.num_prods):
-            for j in range(self.num_procs):
-                sts = self.st_matrix[i, j, :]
-                positive_sts = sts[sts > 0]
-                st_per_pp[i, j] = positive_sts.min() if positive_sts.size > 0 else 0.0
-                
-        st_norm = (st_per_pp / 60.0).flatten()
-        plan_norm = (self.plan / 1000.0).flatten()
-        wip_plan_ratio = (self.wip / (self.plan + 1e-6)).flatten()
-        model_active_norm = (self.active_eqp / 100.0).flatten()
-        model_target_norm = (self.target_eqp / 100.0).flatten()
-        model_st_norm = (self.st_matrix / 60.0).flatten()
-        model_avail = self.avail_matrix.astype(np.float32).flatten()
-        guidance_target_norm = (self.guidance_target_eqp / 100.0).flatten()
-        
-        obs = np.concatenate([
-            wip_norm, active_norm, target_norm, co_norm,
-            produced_ratio, st_norm, plan_norm, wip_plan_ratio,
-            model_active_norm, model_target_norm, model_st_norm,
-            model_avail, guidance_target_norm,
-            [1.0], [float(self.current_step) / self.max_steps]
-        ]).astype(np.float32)
-        if obs.shape != (self.obs_dim,):
-            raise ValueError(
-                f"관측 벡터 크기 불일치: got {obs.shape}, expected ({self.obs_dim},)"
-            )
-        return obs
+        return build_observation_from_env(self, self.observation_norm)
 
     def step(self, action):
         transfers = []
@@ -722,36 +697,21 @@ class SchedulerEnv(gym.Env):
             self._flush_conv_queue()
             self.finalize_assignment_history()
 
-        # Reward calculation (Incremental)
-        # 1. 이번 시간(Step)에 생산한 양에 비례한 보상
-        total_plan = np.sum(self.plan) + 1e-6
-        reward = step_production / total_plan
-        
-        # 2. 장비 이동이 발생한 경우 페널티 부여 (패널티를 0.01에서 0.002로 완화하여 장비 재배치를 유도)
-        if len(transfers) > 0:
-            reward -= 0.002 * len(transfers)
+        reward = compute_reward(
+            RewardStepContext(
+                step_production=step_production,
+                plan=self.plan,
+                produced=self.produced,
+                num_transfers=len(transfers),
+                prev_guidance_gap=prev_guidance_gap,
+                next_guidance_gap=next_guidance_gap,
+                guidance_target_eqp=self.guidance_target_eqp,
+                terminated=terminated,
+            ),
+            self.reward_config,
+        )
 
-        if np.any(self.guidance_target_eqp):
-            target_total = float(np.sum(self.guidance_target_eqp)) + 1e-6
-            reward += 0.5 * ((prev_guidance_gap - next_guidance_gap) / target_total)
-            
-        # 3. 에피소드 종료 시 최종 계획 달성률에 따른 보너스 부여 (계단식 보상 추가로 Sparse Reward 개선)
-        if terminated:
-            final_achievement = np.sum(self.produced) / total_plan
-            if final_achievement >= 0.99:
-                reward += 1.5
-            elif final_achievement >= 0.90:
-                reward += 0.8
-            elif final_achievement >= 0.80:
-                reward += 0.4
-            elif final_achievement >= 0.60:
-                reward += 0.1
-            if np.any(self.guidance_target_eqp):
-                target_total = float(np.sum(self.guidance_target_eqp)) + 1e-6
-                target_match = max(0.0, 1.0 - (next_guidance_gap / target_total))
-                reward += target_match
-        
-        return self._get_obs(), float(reward), terminated, False, {'transfers': transfers}
+        return self._get_obs(), reward, terminated, False, {"transfers": transfers}
 
     def print_final_summary(self, method_name: str = "simulation", save_excel: bool = True):
         """최종 기준에서 제품별 공정별 장비 할당대수와 계획 달성률/가동률 정보를 출력하고 엑셀 파일로 저장합니다."""
