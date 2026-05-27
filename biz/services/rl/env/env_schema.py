@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 from gymnasium import spaces
 
+from biz.services.rl.env.observation import observation_dim
+
 TABLE_KEYS = (
     "wip_info",
     "uph_info",
@@ -109,12 +111,8 @@ def obs_dim_from_canonical(
     processes: List[str],
     models: List[str],
 ) -> int:
-    """SchedulerEnv._get_obs() 차원."""
-    return (
-        len(products) * len(processes) * 8
-        + len(products) * len(processes) * len(models) * 5
-        + 2
-    )
+    """Flat observation size (must match observation.build_observation_from_env)."""
+    return observation_dim(len(products), len(processes), len(models))
 
 
 def action_dim_from_canonical(
