@@ -105,7 +105,7 @@ CREATE TABLE RTS_RSLT_MAS (
 
 COMMENT ON TABLE  RTS_RSLT_MAS                         IS 'RTS 결과 마스터';
 COMMENT ON COLUMN RTS_RSLT_MAS.RULE_TIMEKEY            IS '룰 타임키';
-COMMENT ON COLUMN RTS_RSLT_MAS.SEQ_NO                   IS '장비별 시간 slot 순번 (EQP_ID 내 1시간 단위 1,2,3,...)';
+COMMENT ON COLUMN RTS_RSLT_MAS.SEQ_NO                   IS '장비별 제품 할당 순번 (EQP_ID 내 동일 제품 구간 병합, 제품 변경 시 +1)';
 COMMENT ON COLUMN RTS_RSLT_MAS.EQP_ID                  IS '설비 ID (모델 풀 기준 고정)';
 COMMENT ON COLUMN RTS_RSLT_MAS.EQP_MODEL_CD            IS '설비 모델 코드';
 COMMENT ON COLUMN RTS_RSLT_MAS.BATCH_ID                IS '현재 배치 ID (Tool 교체 단위)';

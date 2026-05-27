@@ -44,149 +44,114 @@ def step_to_slot_tm(base_dt, step_index: int) -> str:
     return (base_dt + timedelta(hours=int(step_index))).strftime("%Y%m%d%H%M%S")
 
 
-def segment_slot_time_range(data, seg, max_steps: int, rule_timekey=None):
-    """Resolve START_TM and END_TM for one assignment segment."""
-    base_dt = resolve_simulation_base_datetime(data, rule_timekey=rule_timekey)
-    start_step = int(seg.start_step)
-    end_step = seg.end_step
-    if end_step is None:
-        end_step = min(start_step + 1, max_steps)
-    else:
-        end_step = int(end_step)
-    if end_step <= start_step:
-        end_step = start_step + 1
-    return step_to_slot_tm(base_dt, start_step), step_to_slot_tm(base_dt, end_step)
+def product_key_from_attr(plan_prod_attr_val: str) -> str:
+    """Merge key: same PLAN_PROD_KEY → one SEQ; IDLE/CONV are separate keys."""
+    attr = str(plan_prod_attr_val or "").strip()
+    if not attr or attr in ("IDLE", "CONV"):
+        return attr or "IDLE"
+    if "|" in attr:
+        return attr.split("|", 1)[0].strip()
+    return attr
 
 
-def _append_hourly_rts_row(
-    rows,
-    *,
-    rule_timekey,
-    unit,
-    seg,
-    step_index,
-    seq_no,
-    max_steps,
-    data,
-    crt_user_id,
-    crt_tm,
-    cum_produced,
-):
-    """Append one RTS_RSLT_MAS row for a single simulation hour slot."""
-    base_dt = resolve_simulation_base_datetime(data, rule_timekey=rule_timekey)
-    slot_start = step_to_slot_tm(base_dt, step_index)
-    slot_end = step_to_slot_tm(base_dt, min(step_index + 1, max_steps))
-    hour_qty = 0.0
-    if hasattr(seg, "hourly_produced") and seg.hourly_produced:
-        hour_qty = float(seg.hourly_produced.get(int(step_index), 0.0))
-    elif seg.end_step is not None:
-        span = max(int(seg.end_step) - int(seg.start_step), 1)
-        hour_qty = float(seg.produced_qty) / span if int(seg.start_step) == step_index else 0.0
-    rows.append({
-        "RULE_TIMEKEY": str(rule_timekey),
-        "SEQ_NO": int(seq_no),
-        "EQP_ID": unit.eqp_id,
-        "EQP_MODEL_CD": unit.eqp_model_cd,
-        "BATCH_ID": seg.batch_id,
-        "START_TM": slot_start,
-        "END_TM": slot_end,
-        "PLAN_PROD_ATTR_VAL": seg.plan_prod_attr_val,
-        "PROD_QTY": str(round(hour_qty, 4)),
-        "CUM_PROD_QTY": str(round(float(cum_produced), 4)),
-        "CRT_USET_ID": crt_user_id,
-        "CRT_TM": crt_tm,
-    })
+def merge_assignment_segments_by_product(segments, max_steps: int):
+    """Merge consecutive assignment segments with the same product into one row group."""
+    merged = []
+    for seg in segments:
+        key = product_key_from_attr(seg.plan_prod_attr_val)
+        end_step = int(seg.end_step) if seg.end_step is not None else int(max_steps)
+        start_step = int(seg.start_step)
+        if end_step <= start_step:
+            end_step = start_step + 1
+
+        if merged and merged[-1]["product_key"] == key:
+            group = merged[-1]
+            group["end_step"] = max(group["end_step"], end_step)
+            group["produced_qty"] += float(getattr(seg, "produced_qty", 0.0) or 0.0)
+            group["plan_prod_attr_val"] = seg.plan_prod_attr_val
+            if getattr(seg, "batch_id", None):
+                group["batch_id"] = seg.batch_id
+        else:
+            merged.append(
+                {
+                    "product_key": key,
+                    "start_step": start_step,
+                    "end_step": end_step,
+                    "produced_qty": float(getattr(seg, "produced_qty", 0.0) or 0.0),
+                    "plan_prod_attr_val": seg.plan_prod_attr_val,
+                    "batch_id": getattr(seg, "batch_id", None),
+                }
+            )
+    return merged
 
 
 def build_rts_rslt_mas_rows(env, data, rule_timekey, crt_user_id="SYSTEM"):
-    """Convert final env state to RTS_RSLT_MAS rows (장비×1시간 slot 단위, 24h 생산흐름)."""
+    """Convert final env state to RTS_RSLT_MAS rows (장비별·제품 단위 병합 구간)."""
     fallback_start, fallback_end = resolve_simulation_time_range(data)
     max_steps = int(getattr(env, "max_steps", 24))
+    base_dt = resolve_simulation_base_datetime(data, rule_timekey=rule_timekey)
     crt_tm = datetime.now().strftime("%Y%m%d%H%M%S")
     rows = []
+
+    if hasattr(env, "finalize_assignment_history"):
+        env.finalize_assignment_history()
 
     all_units = []
     if hasattr(env, "get_all_equipment_units"):
         all_units = env.get_all_equipment_units()
-    elif hasattr(env, "get_deployed_equipment_units"):
-        all_units = env.get_deployed_equipment_units()
 
-    if hasattr(env, "iter_rts_hourly_records"):
-        unit_cum = {unit.eqp_id: 0.0 for unit in env.get_all_equipment_units()}
-        for unit, seg, step_index in env.iter_rts_hourly_records(max_steps=max_steps):
-            hour_qty = 0.0
-            if hasattr(seg, "hourly_produced") and seg.hourly_produced:
-                hour_qty = float(seg.hourly_produced.get(int(step_index), 0.0))
-            unit_cum[unit.eqp_id] = unit_cum.get(unit.eqp_id, 0.0) + hour_qty
-            _append_hourly_rts_row(
-                rows,
-                rule_timekey=rule_timekey,
-                unit=unit,
-                seg=seg,
-                step_index=step_index,
-                seq_no=step_index + 1,
-                max_steps=max_steps,
-                data=data,
-                crt_user_id=crt_user_id,
-                crt_tm=crt_tm,
-                cum_produced=unit_cum[unit.eqp_id],
-            )
-        return rows
-
-    if hasattr(env, "iter_rts_assignment_records"):
-        for unit in env.get_all_equipment_units() if hasattr(env, "get_all_equipment_units") else []:
-            unit_cum = 0.0
-            records = [
-                (u, seg)
-                for u, seg in env.iter_rts_assignment_records()
-                if u.eqp_id == unit.eqp_id
-            ]
-            for _, seg in records:
-                end_step = seg.end_step if seg.end_step is not None else max_steps
-                for step_index in range(int(seg.start_step), int(end_step)):
-                    hour_qty = 0.0
-                    if hasattr(seg, "hourly_produced") and seg.hourly_produced:
-                        hour_qty = float(seg.hourly_produced.get(step_index, 0.0))
-                    unit_cum += hour_qty
-                    _append_hourly_rts_row(
-                        rows,
-                        rule_timekey=rule_timekey,
-                        unit=unit,
-                        seg=seg,
-                        step_index=step_index,
-                        seq_no=step_index + 1,
-                        max_steps=max_steps,
-                        data=data,
-                        crt_user_id=crt_user_id,
-                        crt_tm=crt_tm,
-                        cum_produced=unit_cum,
-                    )
-        if rows:
-            return rows
-
-    if all_units:
-        base_dt = resolve_simulation_base_datetime(data, rule_timekey)
-        per_hour = float(sum(u.produced_qty for u in all_units) or 0.0) / max(
-            len(all_units) * max_steps, 1
-        )
+    if all_units and hasattr(all_units[0], "assignment_history"):
         for unit in all_units:
+            segments = list(getattr(unit, "assignment_history", []) or [])
+            if not segments and hasattr(env, "_sync_unit_assignment_log"):
+                env._sync_unit_assignment_log(unit)
+                env.finalize_assignment_history()
+                segments = list(unit.assignment_history or [])
+
+            merged_groups = merge_assignment_segments_by_product(segments, max_steps)
             unit_cum = 0.0
-            for step_index in range(max_steps):
-                unit_cum += per_hour
+            for seq_no, group in enumerate(merged_groups, start=1):
+                unit_cum += group["produced_qty"]
                 rows.append({
                     "RULE_TIMEKEY": str(rule_timekey),
-                    "SEQ_NO": step_index + 1,
+                    "SEQ_NO": seq_no,
                     "EQP_ID": unit.eqp_id,
                     "EQP_MODEL_CD": unit.eqp_model_cd,
-                    "BATCH_ID": unit.batch_id,
-                    "START_TM": step_to_slot_tm(base_dt, step_index),
-                    "END_TM": step_to_slot_tm(base_dt, min(step_index + 1, max_steps)),
-                    "PLAN_PROD_ATTR_VAL": unit.plan_prod_attr_val or "",
-                    "PROD_QTY": str(round(per_hour, 4)),
+                    "BATCH_ID": group["batch_id"],
+                    "START_TM": step_to_slot_tm(base_dt, group["start_step"]),
+                    "END_TM": step_to_slot_tm(base_dt, group["end_step"]),
+                    "PLAN_PROD_ATTR_VAL": group["plan_prod_attr_val"],
+                    "PROD_QTY": str(round(group["produced_qty"], 4)),
                     "CUM_PROD_QTY": str(round(unit_cum, 4)),
                     "CRT_USET_ID": crt_user_id,
                     "CRT_TM": crt_tm,
                 })
+        if rows:
+            return rows
+
+    if hasattr(env, "get_deployed_equipment_units"):
+        all_units = env.get_deployed_equipment_units()
+
+    if all_units:
+        per_hour = float(sum(getattr(u, "produced_qty", 0.0) for u in all_units) or 0.0) / max(
+            len(all_units) * max_steps, 1
+        )
+        for unit in all_units:
+            attr = getattr(unit, "plan_prod_attr_val", None) or ""
+            rows.append({
+                "RULE_TIMEKEY": str(rule_timekey),
+                "SEQ_NO": 1,
+                "EQP_ID": unit.eqp_id,
+                "EQP_MODEL_CD": unit.eqp_model_cd,
+                "BATCH_ID": unit.batch_id,
+                "START_TM": step_to_slot_tm(base_dt, 0),
+                "END_TM": step_to_slot_tm(base_dt, max_steps),
+                "PLAN_PROD_ATTR_VAL": attr,
+                "PROD_QTY": str(round(float(getattr(unit, "produced_qty", 0.0) or per_hour * max_steps), 4)),
+                "CUM_PROD_QTY": str(round(float(getattr(unit, "produced_qty", 0.0) or per_hour * max_steps), 4)),
+                "CRT_USET_ID": crt_user_id,
+                "CRT_TM": crt_tm,
+            })
         return rows
 
     for p_idx, prod in enumerate(env.products):
