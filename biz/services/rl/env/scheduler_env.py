@@ -1,5 +1,6 @@
 """시간대별 설비 배치 강화학습 시뮬레이터 (Gymnasium Env)."""
 import os
+from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -27,6 +28,7 @@ class SchedulerEnv(gym.Env):
     DEFAULT_MAX_PRODS = 10
     DEFAULT_MAX_PROCS = 10
     DEFAULT_MAX_MODELS = 10
+    DAY_BOUNDARY_HOUR: int = 7
 
     # =========================================================================
     # 초기화
@@ -401,12 +403,24 @@ class SchedulerEnv(gym.Env):
         except ValueError:
             return None
 
-    def _load_plan_schedule(self):
-        """PLAN_INFO를 step 인덱스 기반 시간대별 계획 스케줄로 변환한다.
+    @staticmethod
+    def _find_day_start(dt: datetime, boundary_hour: int = DAY_BOUNDARY_HOUR) -> datetime:
+        """dt가 속하는 하루(경계시~다음날 경계시)의 시작 시점(경계시)을 반환한다."""
+        base = dt.replace(minute=0, second=0, microsecond=0)
+        if base.hour >= boundary_hour:
+            return base.replace(hour=boundary_hour)
+        return (base - timedelta(days=1)).replace(hour=boundary_hour)
 
-        각 (PLAN_PROD_KEY, OPER_ID) 슬롯에 대해 (start_step, end_step, plan_qty)
-        리스트를 구성하고, step 0 기준 active plan으로 env.plan을 초기화한다.
-        07시 등 일 경계가 plan row 경계와 일치하면 step 진행 중 자동으로 감지된다.
+    def _load_plan_schedule(self):
+        """PLAN_INFO를 DAY_BOUNDARY_HOUR(07시) 기준 하루 단위로 집계하여
+        plan_schedule을 구성하고 step 0의 active plan으로 env.plan을 초기화한다.
+
+        같은 (PLAN_PROD_KEY, OPER_ID)에 대해 하루 내 여러 서브구간 plan row가 있으면
+        (예: 오전/오후 분할, 시간별 계획) 해당 구간의 PLAN_QTY를 모두 합산하여
+        하루 단위 plan qty를 만든다.
+
+        달성률(period_start_produced)은 07시 경계에서만 리셋되며,
+        하루 내 서브구간 변경에는 영향받지 않는다.
         """
         self.plan_schedule: Dict[Tuple[int, int], List[Tuple[int, int, float]]] = {}
         self.active_plan_seg_idx: Dict[Tuple[int, int], int] = {}
@@ -432,21 +446,28 @@ class SchedulerEnv(gym.Env):
                     self.plan[self.prod_idx[p], self.proc_idx[s]] += float(row['PLAN_QTY'])
             return
 
+        # (pi, si, day_start_dt) → 합산 plan_qty
+        day_totals: Dict[Tuple[int, int, datetime], float] = defaultdict(float)
         for _, row in plan_df.iterrows():
             p_key, s_key = row['PLAN_PROD_KEY'], row['OPER_ID']
             if p_key not in self.prod_idx or s_key not in self.proc_idx:
                 continue
             start_dt = self._parse_plan_time(str(row['START_TIME']))
-            end_dt = self._parse_plan_time(str(row['END_TIME']))
-            if start_dt is None or end_dt is None:
+            if start_dt is None:
                 continue
-            start_step = int(round((start_dt - self.base_dt).total_seconds() / 3600))
-            end_step = int(round((end_dt - self.base_dt).total_seconds() / 3600))
             pi, si = self.prod_idx[p_key], self.proc_idx[s_key]
+            day_start = self._find_day_start(start_dt, self.DAY_BOUNDARY_HOUR)
+            day_totals[(pi, si, day_start)] += float(row['PLAN_QTY'])
+
+        # day_totals → plan_schedule[(pi, si)] 리스트
+        for (pi, si, day_start), total_qty in day_totals.items():
+            day_end = day_start + timedelta(days=1)
+            day_start_step = int(round((day_start - self.base_dt).total_seconds() / 3600))
+            day_end_step = int(round((day_end - self.base_dt).total_seconds() / 3600))
             key = (pi, si)
             if key not in self.plan_schedule:
                 self.plan_schedule[key] = []
-            self.plan_schedule[key].append((start_step, end_step, float(row['PLAN_QTY'])))
+            self.plan_schedule[key].append((day_start_step, day_end_step, total_qty))
 
         for key in self.plan_schedule:
             self.plan_schedule[key].sort()
