@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 
@@ -30,6 +31,7 @@ class RewardStepContext:
     next_guidance_gap: float
     guidance_target_eqp: np.ndarray
     terminated: bool
+    period_start_produced: Optional[np.ndarray] = None
 
 
 def compute_reward(
@@ -51,7 +53,13 @@ def compute_reward(
         )
 
     if ctx.terminated:
-        final_achievement = float(np.sum(ctx.produced)) / total_plan
+        period_start = (
+            ctx.period_start_produced
+            if ctx.period_start_produced is not None
+            else np.zeros_like(ctx.produced)
+        )
+        within_period = ctx.produced - period_start
+        final_achievement = float(np.sum(within_period)) / total_plan
         if final_achievement >= 0.99:
             reward += config.terminal_bonus_99
         elif final_achievement >= 0.90:

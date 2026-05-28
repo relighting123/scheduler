@@ -39,7 +39,9 @@ def build_observation_from_env(
     target_norm = (env.target_eqp.sum(axis=2) / norm.eqp_scale).flatten()
     co_norm = np.zeros((num_prods, num_procs)).flatten()
 
-    produced_ratio = (env.produced / (env.plan + 1e-6)).flatten()
+    period_start = getattr(env, "period_start_produced", np.zeros_like(env.produced))
+    within_period_produced = env.produced - period_start
+    produced_ratio = (within_period_produced / (env.plan + 1e-6)).flatten()
 
     st_per_pp = np.zeros((num_prods, num_procs))
     for i in range(num_prods):
