@@ -150,8 +150,13 @@ def compute_production_step(env: "SchedulerEnv") -> ProductionStepResult:
             total_production += actual_produce
 
             plan_qty = env.plan[p, s]
-            cum_produced = env.produced[p, s]
-            achievement = compute_achievement_rate(cum_produced, plan_qty)
+            period_start = (
+                env.period_start_produced[p, s]
+                if hasattr(env, "period_start_produced")
+                else 0.0
+            )
+            within_period_produced = env.produced[p, s] - period_start
+            achievement = compute_achievement_rate(within_period_produced, plan_qty)
             batch_id = env.batch_id_map.get((env.products[p], env.processes[s]), "N/A")
 
             if plan_qty > 0 or actual_produce > 0 or active_count > 0:
@@ -166,7 +171,7 @@ def compute_production_step(env: "SchedulerEnv") -> ProductionStepResult:
                         production_qty=actual_produce,
                         remain_wip=env.wip[p, s],
                         utilization_rate=utilization,
-                        cum_produced=cum_produced,
+                        cum_produced=within_period_produced,
                         plan_qty=plan_qty,
                         achievement_rate=achievement,
                     )
