@@ -16,7 +16,9 @@ from biz.services.rl.env.observation import (
     build_observation_from_env,
     observation_dim,
 )
+from biz.services.rl.env.production import compute_production_step
 from biz.services.rl.env.reward import RewardConfig, RewardStepContext, compute_reward
+from biz.services.rl.env.transfer import execute_transfer_action
 
 
 class SchedulerEnv(gym.Env):
@@ -167,148 +169,16 @@ class SchedulerEnv(gym.Env):
         return self._get_obs(), {}
 
     def step(self, action):
-        transfers = []
         prev_guidance_gap = self._guidance_allocation_gap()
 
         self._release_conv_units()
 
-        # step 0은 초기 배치 확정 단계 — 장비 전환 없음
-        if self.current_step == 0:
-            action = 0
+        # 장비 이동 실행 (step 0은 초기 배치 확정 단계이므로 이동 없음)
+        transfers = execute_transfer_action(self, action)
 
-        if action > 0:
-            target_idx = action - 1
-            t_prod = target_idx // (self.num_procs * self.num_models)
-            rem = target_idx % (self.num_procs * self.num_models)
-            t_proc = rem // self.num_models
-            t_model = rem % self.num_models
-
-            if self._is_available(t_prod, t_proc, t_model) and self.st_matrix[t_prod, t_proc, t_model] > 0:
-                moved = False
-                to_batch = self.batch_id_map.get(
-                    (self.products[t_prod], self.processes[t_proc])
-                )
-
-                unit = self._take_one_from_idle(t_model)
-                if unit is not None:
-                    self.target_eqp[t_prod, t_proc, t_model] += 1
-                    if self._needs_tool_conv(unit, None, to_batch, from_is_idle=True):
-                        self._enqueue_tool_conv(unit, t_prod, t_proc, to_batch)
-                    else:
-                        self.pending_unit_moves.append((t_prod, t_proc, t_model, unit))
-                    moved = True
-                    self._sync_active_eqp_counts()
-                    transfers.append({
-                        'FROM_PROD': 'IDLE', 'FROM_PROC': 'IDLE', 'FROM_BATCH': None,
-                        'TO_PROD': self.products[t_prod], 'TO_PROC': self.processes[t_proc],
-                        'TO_BATCH': to_batch,
-                        'MODEL': self.models[t_model], 'EQP_ID': unit.eqp_id,
-                        'NEEDS_CONV': False,
-                    })
-
-                if not moved:
-                    best_src_p, best_src_s = None, None
-                    min_priority = float('inf')
-
-                    for p in range(self.num_prods):
-                        for s in range(self.num_procs):
-                            if self.active_eqp[p, s, t_model] > 0 and (p != t_prod or s != t_proc):
-                                st_val = self.st_matrix[p, s, t_model]
-                                uph = (60.0 / st_val) if st_val > 0.0 else 0.0
-                                priority = (self.wip[p, s] / uph) if uph > 0.0 else -1.0
-                                if priority < min_priority:
-                                    min_priority = priority
-                                    best_src_p, best_src_s = p, s
-
-                    if best_src_p is not None:
-                        src_key = self._slot_key(best_src_p, best_src_s, t_model)
-                        src_units = self.slot_equipment.get(src_key, [])
-                        from_batch = src_units[-1].batch_id if src_units else None
-                        unit = self._take_one_from_slot(best_src_p, best_src_s, t_model)
-                        if unit is not None:
-                            self.target_eqp[t_prod, t_proc, t_model] += 1
-                            needs_conv = self._needs_tool_conv(
-                                unit, from_batch, to_batch, from_is_idle=False
-                            )
-                            if needs_conv:
-                                self._enqueue_tool_conv(unit, t_prod, t_proc, to_batch)
-                            else:
-                                self.pending_unit_moves.append((t_prod, t_proc, t_model, unit))
-                            moved = True
-                            self._sync_active_eqp_counts()
-                            transfers.append({
-                                'FROM_PROD': self.products[best_src_p],
-                                'FROM_PROC': self.processes[best_src_s],
-                                'FROM_BATCH': from_batch,
-                                'TO_PROD': self.products[t_prod],
-                                'TO_PROC': self.processes[t_proc],
-                                'TO_BATCH': to_batch,
-                                'MODEL': self.models[t_model],
-                                'EQP_ID': unit.eqp_id,
-                                'NEEDS_CONV': needs_conv,
-                            })
-
-        step_production = 0.0
-        for p in range(self.num_prods):
-            for s in range(self.num_procs):
-                capacity = 0.0
-                unit_contributions = []
-
-                for m in range(self.num_models):
-                    if not self._is_available(p, s, m):
-                        continue
-                    st_val = self.st_matrix[p, s, m]
-                    if st_val > 0.0:
-                        per_unit_cap = 60.0 / st_val
-                        slot_units = self.slot_equipment.get(self._slot_key(p, s, m), [])
-                        for unit in slot_units:
-                            if unit.is_in_conv():
-                                continue
-                            unit_contributions.append((unit, per_unit_cap))
-                            capacity += per_unit_cap
-
-                active_count = np.sum(self.active_eqp[p, s, :])
-                transition_count = np.sum(self.target_eqp[p, s, :])
-                actual_produce = min(capacity, self.wip[p, s])
-
-                utilization = (actual_produce / capacity * 100.0) if capacity > 0 else 0.0
-                self.total_eqp_hours[p, s] += active_count * 1.0
-                self.operating_eqp_hours[p, s] += (
-                    actual_produce / capacity * active_count * 1.0
-                ) if capacity > 0 else 0.0
-
-                if unit_contributions:
-                    total_unit_cap = sum(cap for _, cap in unit_contributions)
-                    for unit, unit_cap in unit_contributions:
-                        share = actual_produce * (unit_cap / total_unit_cap) if total_unit_cap > 0 else 0.0
-                        self._add_unit_segment_production(unit, share)
-
-                self.produced[p, s] += actual_produce
-                step_production += actual_produce
-                self.wip[p, s] -= actual_produce
-                if s < self.num_procs - 1:
-                    self.wip[p, s + 1] += actual_produce
-
-                plan_qty = self.plan[p, s]
-                cum_produced = self.produced[p, s]
-                achievement_rate = (cum_produced / plan_qty * 100.0) if plan_qty > 0 else 0.0
-                batch_id = self.batch_id_map.get((self.products[p], self.processes[s]), 'N/A')
-
-                if plan_qty > 0 or actual_produce > 0 or active_count > 0:
-                    self.production_logs.append({
-                        'TIME_SLOT': self.current_step,
-                        'BATCH_ID': batch_id,
-                        'PLAN_PROD_KEY': self.products[p],
-                        'OPER_ID': self.processes[s],
-                        'ACTIVE_EQP_CNT': active_count,
-                        'TRANSITION_EQP_CNT': transition_count,
-                        'PRODUCTION_QTY': actual_produce,
-                        'REMAIN_WIP': self.wip[p, s],
-                        'UTILIZATION_RATE(%)': round(utilization, 2),
-                        'CUM_PRODUCED': cum_produced,
-                        'PLAN_QTY': plan_qty,
-                        'ACHIEVEMENT_RATE(%)': round(achievement_rate, 2)
-                    })
+        # 생산 시뮬레이션 (용량 계산 → WIP 소모 → 가동률/달성률 기록)
+        production_result = compute_production_step(self)
+        self.production_logs.extend(log.to_dict() for log in production_result.logs)
 
         self._resolve_pending_unit_moves()
         self.target_eqp.fill(0)
@@ -320,9 +190,10 @@ class SchedulerEnv(gym.Env):
             self._flush_conv_queue()
             self.finalize_assignment_history()
 
+        # 보상 계산
         reward = compute_reward(
             RewardStepContext(
-                step_production=step_production,
+                step_production=production_result.total_production,
                 plan=self.plan,
                 produced=self.produced,
                 num_transfers=len(transfers),
@@ -334,7 +205,7 @@ class SchedulerEnv(gym.Env):
             self.reward_config,
         )
 
-        return self._get_obs(), reward, terminated, False, {"transfers": transfers}
+        return self._get_obs(), reward, terminated, False, {"transfers": [t.to_dict() for t in transfers]}
 
     def print_final_summary(self, method_name: str = "simulation", save_excel: bool = True):
         """최종 장비 할당 및 계획 달성률/가동률 요약을 콘솔에 출력하고 엑셀로 저장한다."""
