@@ -1,7 +1,7 @@
 # `biz/services/rl/db` — DB 레이어
 
 스케줄러 RL의 **Oracle 테이블 DDL**, **RTS_LINEDSDB_INF(EAV) 입력 데이터 조회·변환**, **학습용 스냅샷 로드**를 담당한다.  
-환경(`SchedulerEnv`) 생성·추론 헬퍼는 DB와 무관하므로 `biz/services/rl/env/env_factory.py`에 둔다.
+환경(`SchedulerEnv`) 생성·추론 헬퍼는 DB와 무관하므로 `biz/services/rl/env/factory.py`에 둔다.
 
 ## 폴더 구조
 

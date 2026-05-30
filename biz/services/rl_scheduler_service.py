@@ -2,10 +2,10 @@
 
 from biz.services.rl.db.ddl import create_learning_tables, create_output_tables
 from biz.services.rl.db.training_data_access import DEFAULT_RULE_TIMEKEY, TrainingDataAccess
-from biz.services.rl.env.env_factory import SchedulerEnvFactory
-from biz.services.rl.infer.inference_runner import InferenceRunner
+from biz.services.rl.env.factory import SchedulerEnvFactory
+from biz.services.rl.infer.runner import InferenceRunner
 from biz.services.rl.train.trainer import BenchmarkTrainer
-from biz.services.rl.validation.benchmark_evaluator import BenchmarkEvaluator
+from biz.services.rl.validation.evaluator import BenchmarkEvaluator
 
 
 class RLSchedulerService:

@@ -11,7 +11,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from torch.utils.data import DataLoader, TensorDataset
 
-from biz.services.rl.config.schema import compute_canonical_schema, save_env_schema
+from biz.services.rl.config.env_schema import compute_canonical_schema, save_env_schema
 from biz.services.rl.env.scheduler_env import SchedulerEnv
 from biz.services.rl.env.snapshot_rotation_env import SnapshotRotationEnv
 from biz.services.rl.train.callbacks import PlottingCallback
@@ -55,7 +55,7 @@ class BenchmarkTrainer:
 
     def score_benchmark_model(self, model, scenario_payloads, max_steps=24):
         from biz.services.rl.train.expert import OptimalExpert
-        from biz.services.rl.validation.benchmark_evaluator import BenchmarkEvaluator
+        from biz.services.rl.validation.evaluator import BenchmarkEvaluator
 
         evaluator = BenchmarkEvaluator(self.service)
         rows = []
