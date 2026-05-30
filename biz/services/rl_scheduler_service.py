@@ -38,13 +38,13 @@ class RLSchedulerService:
 
     def init_db_scenario(self):
         """Initialize heuristic trap scenario tables (DROP -> CREATE -> INSERT)."""
-        from biz.services.rl.db.linedb_constants import (
+        from biz.services.rl.db.input_data_constants import (
             GBN_ASSIGN_EQUIP,
             GBN_D0_TARGET,
             GBN_TOOL,
             GBN_UPH,
             GBN_WIP,
-            LINEDB_TABLE,
+            INPUT_DATA_TABLE,
         )
 
         print("\n[DB 설정] DB 시나리오 초기화를 시작합니다 (Heuristic Trap Scenario)...")
@@ -56,7 +56,7 @@ class RLSchedulerService:
             "BATCH_TOOL_INFO",
             "TOOL_QTY_INFO",
             "PLAN_INFO",
-            LINEDB_TABLE,
+            INPUT_DATA_TABLE,
             "RTD_CONV_INF",
             "RTS_RSLT_MAS",
         ]
@@ -72,25 +72,25 @@ class RLSchedulerService:
         tk = self.DEFAULT_RULE_TIMEKEY
         fac = "FAC1"
 
-        def insert_linedb(batch, prod, oper, oper_seq, model, gbn, val):
+        def insert_input_data(batch, prod, oper, oper_seq, model, gbn, val):
             self.db.execute(
-                f"INSERT INTO {LINEDB_TABLE} VALUES ("
+                f"INSERT INTO {INPUT_DATA_TABLE} VALUES ("
                 f"'{tk}', '{fac}', '{batch}', '{prod}', '{oper}', "
                 f"{oper_seq}, '{model}', '{gbn}', '{val}')"
             )
 
-        insert_linedb("B1", "P1", "OP10", 10, "-", GBN_WIP, "5000")
-        insert_linedb("B2", "P1", "OP20", 20, "-", GBN_WIP, "500")
-        insert_linedb("B1", "P1", "OP10", 10, "MODEL_A", GBN_UPH, "100")
-        insert_linedb("B2", "P1", "OP20", 20, "MODEL_A", GBN_UPH, "100")
-        insert_linedb("B1", "P1", "OP10", 10, "MODEL_A", GBN_ASSIGN_EQUIP, "5")
-        insert_linedb("B2", "P1", "OP20", 20, "MODEL_A", GBN_ASSIGN_EQUIP, "5")
-        insert_linedb("B1", "P1", "OP10", 10, "MODEL_A", GBN_TOOL, "10")
-        insert_linedb("B2", "P1", "OP20", 20, "MODEL_A", GBN_TOOL, "10")
-        insert_linedb("B1", "P1", "OP10", 10, "-", GBN_D0_TARGET, "4000")
-        insert_linedb("B2", "P1", "OP20", 20, "-", GBN_D0_TARGET, "4000")
+        insert_input_data("B1", "P1", "OP10", 10, "-", GBN_WIP, "5000")
+        insert_input_data("B2", "P1", "OP20", 20, "-", GBN_WIP, "500")
+        insert_input_data("B1", "P1", "OP10", 10, "MODEL_A", GBN_UPH, "100")
+        insert_input_data("B2", "P1", "OP20", 20, "MODEL_A", GBN_UPH, "100")
+        insert_input_data("B1", "P1", "OP10", 10, "MODEL_A", GBN_ASSIGN_EQUIP, "5")
+        insert_input_data("B2", "P1", "OP20", 20, "MODEL_A", GBN_ASSIGN_EQUIP, "5")
+        insert_input_data("B1", "P1", "OP10", 10, "MODEL_A", GBN_TOOL, "10")
+        insert_input_data("B2", "P1", "OP20", 20, "MODEL_A", GBN_TOOL, "10")
+        insert_input_data("B1", "P1", "OP10", 10, "-", GBN_D0_TARGET, "4000")
+        insert_input_data("B2", "P1", "OP20", 20, "-", GBN_D0_TARGET, "4000")
 
-        print(f"[성공] DB 시나리오 초기화가 완료되었습니다 ({LINEDB_TABLE}).")
+        print(f"[성공] DB 시나리오 초기화가 완료되었습니다 ({INPUT_DATA_TABLE}).")
 
     def generate_expert_data(self, env, num_samples=5000, expert_cls=None, target_allocation=None):
         return self._trainer.generate_expert_data(

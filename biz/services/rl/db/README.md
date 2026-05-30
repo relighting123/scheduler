@@ -1,6 +1,6 @@
 # `biz/services/rl/db` — DB 레이어
 
-스케줄러 RL의 **Oracle 테이블 DDL**, **RTS_LINEDSDB_INF(EAV) 조회·변환**, **학습용 스냅샷 로드**를 담당한다.  
+스케줄러 RL의 **Oracle 테이블 DDL**, **RTS_LINEDSDB_INF(EAV) 입력 데이터 조회·변환**, **학습용 스냅샷 로드**를 담당한다.  
 환경(`SchedulerEnv`) 생성·추론 헬퍼는 DB와 무관하므로 `biz/services/rl/env/env_factory.py`에 둔다.
 
 ## 폴더 구조
@@ -8,24 +8,24 @@
 | 파일 | 역할 |
 |------|------|
 | `ddl.py` | `CREATE TABLE` DDL — 입력 `RTS_LINEDSDB_INF`, 출력 `RTD_CONV_INF` / `RTS_RSLT_MAS` |
-| `linedb_constants.py` | EAV 테이블명·컬럼·`GBN_CD` 상수, D0/D1 계획 구간, 빈 스냅샷 DataFrame |
-| `linedb_snapshot_sql.py` | EAV → env 7종 스냅샷 **SQL 조회** (기본 경로) |
-| `linedb_snapshot_pandas.py` | EAV DataFrame → env 7종 **pandas 변환** (DB 실패 시 폴백) |
+| `input_data_constants.py` | 입력 EAV 테이블명·컬럼·`GBN_CD` 상수, D0/D1 계획 구간, 빈 스냅샷 DataFrame |
+| `input_data_snapshot_sql.py` | 입력 EAV → env 7종 스냅샷 **SQL 조회** (기본 경로) |
+| `input_data_snapshot_pandas.py` | 입력 EAV DataFrame → env 7종 **pandas 변환** (DB 실패 시 폴백) |
 | `training_data_access.py` | `TrainingDataAccess` — RULE_TIMEKEY 해석·범위 조회·스냅샷 로드 |
 
 ## 데이터 흐름
 
 ```
-RTS_LINEDSDB_INF (EAV)
+RTS_LINEDSDB_INF (EAV 입력 데이터)
         │
-        ├─► linedb_snapshot_sql.fetch_snapshot_from_db()  ──► wip/uph/plan 등 7 DataFrame
+        ├─► input_data_snapshot_sql.fetch_snapshot_from_db()  ──► wip/uph/plan 등 7 DataFrame
         │
-        └─► (폴백) training_data_access → linedb_snapshot_pandas.transform_linedb_snapshot()
+        └─► (폴백) training_data_access → input_data_snapshot_pandas.transform_input_data_snapshot()
 ```
 
 ## RTS_LINEDSDB_INF 스키마
 
-테이블 명: `RTS_LINEDSDB_INF`
+테이블 명: `RTS_LINEDSDB_INF` (`INPUT_DATA_TABLE`)
 
 | 컬럼 | 타입 | PK | 설명 |
 |------|------|-----|------|

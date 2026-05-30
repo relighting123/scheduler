@@ -2,16 +2,20 @@
 
 import pandas as pd
 
-from biz.services.rl.db.linedb_constants import LINEDB_COLUMNS, LINEDB_TABLE, empty_snapshot_frames
-from biz.services.rl.db.linedb_snapshot_pandas import transform_linedb_snapshot
-from biz.services.rl.db.linedb_snapshot_sql import fetch_snapshot_from_db
+from biz.services.rl.db.input_data_constants import (
+    INPUT_DATA_COLUMNS,
+    INPUT_DATA_TABLE,
+    empty_snapshot_frames,
+)
+from biz.services.rl.db.input_data_snapshot_pandas import transform_input_data_snapshot
+from biz.services.rl.db.input_data_snapshot_sql import fetch_snapshot_from_db
 
 DEFAULT_RULE_TIMEKEY = "20251020070000"
 
-_LINEDB_SELECT = (
+_INPUT_DATA_SELECT = (
     "SELECT RULE_TIMEKEY, FAC_ID, BATCH_ID, PLAN_PROD_KEY, OPER_ID, "
     "OPER_SEQ, EQP_MODEL_CD, GBN_CD, ATTR_VAL "
-    f"FROM {LINEDB_TABLE}"
+    f"FROM {INPUT_DATA_TABLE}"
 )
 
 
@@ -38,7 +42,7 @@ class TrainingDataAccess:
             return str(rule_timekey)
         try:
             row = self.db.select_one(
-                f"SELECT MAX(RULE_TIMEKEY) AS RULE_TIMEKEY FROM {LINEDB_TABLE}"
+                f"SELECT MAX(RULE_TIMEKEY) AS RULE_TIMEKEY FROM {INPUT_DATA_TABLE}"
             )
             tk_val = self._row_value(row, "RULE_TIMEKEY")
             if tk_val:
@@ -69,7 +73,7 @@ class TrainingDataAccess:
 
         try:
             rows = self.db.select_list(
-                f"SELECT DISTINCT RULE_TIMEKEY FROM {LINEDB_TABLE} ORDER BY RULE_TIMEKEY"
+                f"SELECT DISTINCT RULE_TIMEKEY FROM {INPUT_DATA_TABLE} ORDER BY RULE_TIMEKEY"
             )
             keys = []
             for r in rows:
@@ -82,20 +86,20 @@ class TrainingDataAccess:
             pass
         return [self.resolve_rule_timekey(to_tk)]
 
-    def fetch_linedb_rows(self, rule_timekey=None):
+    def fetch_input_data_rows(self, rule_timekey=None):
         """RTS_LINEDSDB_INF 원본 EAV 행 조회 (디버그·pandas 변환용)."""
         if rule_timekey is not None:
             resolved = str(rule_timekey)
             rows = self.db.select_list(
-                f"{_LINEDB_SELECT} WHERE RULE_TIMEKEY = :tk",
+                f"{_INPUT_DATA_SELECT} WHERE RULE_TIMEKEY = :tk",
                 {"tk": resolved},
             )
         else:
-            rows = self.db.select_list(_LINEDB_SELECT)
+            rows = self.db.select_list(_INPUT_DATA_SELECT)
 
         if not rows:
-            return pd.DataFrame(columns=LINEDB_COLUMNS)
-        return pd.DataFrame(rows, columns=LINEDB_COLUMNS)
+            return pd.DataFrame(columns=INPUT_DATA_COLUMNS)
+        return pd.DataFrame(rows, columns=INPUT_DATA_COLUMNS)
 
     def fetch_snapshot(self, rule_timekey: str):
         """SQL 집계·필터로 env 입력 7종 DataFrame을 조회한다."""
@@ -105,7 +109,7 @@ class TrainingDataAccess:
         """하위 호환: RULE_TIMEKEY 포함 7종 테이블 형태 raw 프레임."""
         try:
             rows = self.db.select_list(
-                f"SELECT DISTINCT RULE_TIMEKEY FROM {LINEDB_TABLE} ORDER BY RULE_TIMEKEY"
+                f"SELECT DISTINCT RULE_TIMEKEY FROM {INPUT_DATA_TABLE} ORDER BY RULE_TIMEKEY"
             )
             keys = [
                 str(self._row_value(r, "RULE_TIMEKEY"))
@@ -163,8 +167,8 @@ class TrainingDataAccess:
                 "데이터를 조회할 수 없습니다. DB 초기화(init_db_scenario)가 올바르게 수행되었는지 확인하세요."
             )
             try:
-                df = self.fetch_linedb_rows(rule_timekey=resolved_tk)
-                return transform_linedb_snapshot(df, rule_timekey=resolved_tk)
+                df = self.fetch_input_data_rows(rule_timekey=resolved_tk)
+                return transform_input_data_snapshot(df, rule_timekey=resolved_tk)
             except Exception:
                 return empty_snapshot_frames()
 

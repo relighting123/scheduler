@@ -3,7 +3,7 @@
 ```
 biz/services/rl/
   config/       # 설정 인프라: YAML 정책 튜닝, obs/action 스키마 저장·복원
-  db/           # DB 인프라: 테이블 DDL, LINEDB EAV 조회·변환, 스냅샷 액세스
+  db/           # DB 인프라: 테이블 DDL, 입력 데이터(EAV) 조회·변환, 스냅샷 액세스
   env/          # 핵심 시뮬레이션 도메인: 환경, 관측, 보상, env 팩토리
   train/        # PPO 학습, 행동 복제(BC), 전문가 정책
   validation/   # 벤치마크 CSV 검증 (학습 없음)
@@ -21,9 +21,9 @@ biz/services/rl/
 
 ### `db/` — DB 인프라 (비즈니스 로직과 무관한 인프라)
 - `ddl.py` — `RTS_LINEDSDB_INF` 입력·출력 테이블 `CREATE TABLE` DDL
-- `linedb_constants.py` — EAV 테이블 메타, `GBN_CD`, D0/D1 계획 구간
-- `linedb_snapshot_sql.py` — Oracle SQL로 필터·집계 후 env용 7종 DataFrame 조회
-- `linedb_snapshot_pandas.py` — EAV pandas 폴백 변환
+- `input_data_constants.py` — EAV 테이블 메타, `GBN_CD`, D0/D1 계획 구간
+- `input_data_snapshot_sql.py` — Oracle SQL로 필터·집계 후 env용 7종 DataFrame 조회
+- `input_data_snapshot_pandas.py` — EAV pandas 폴백 변환
 - `training_data_access.py` — `RTS_LINEDSDB_INF` RULE_TIMEKEY 기반 스냅샷 조회
 
 ### `env/` — 핵심 시뮬레이션 도메인
@@ -65,7 +65,7 @@ biz/services/rl/
 | 관측 벡터 레이아웃 | `env/observation.py` |
 | 보상 항목 | `env/reward.py` |
 | 시뮬레이션 동역학 | `env/scheduler_env.py` |
-| DB 쿼리 | `db/linedb_snapshot_sql.py`, `db/training_data_access.py` |
+| DB 쿼리 | `db/input_data_snapshot_sql.py`, `db/training_data_access.py` |
 | 테이블 DDL | `db/ddl.py` |
 | env 생성·추론 헬퍼 | `env/env_factory.py` |
 | 전문가 정책 | `train/expert.py` |

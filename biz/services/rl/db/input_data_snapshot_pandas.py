@@ -1,22 +1,22 @@
 """RTS_LINEDSDB_INF EAV → env 스냅샷 변환 (pandas 폴백).
 
-DB 조회 시에는 linedb_snapshot_sql.fetch_snapshot_from_db()가
+DB 조회 시에는 input_data_snapshot_sql.fetch_snapshot_from_db()가
 필터·집계·수치 변환을 SQL에서 수행한다.
-본 모듈의 transform_linedb_snapshot()은 EAV DataFrame이 이미 메모리에 있을 때만 사용한다.
+본 모듈의 transform_input_data_snapshot()은 EAV DataFrame이 이미 메모리에 있을 때만 사용한다.
 """
 
 from typing import Dict
 
 import pandas as pd
 
-from biz.services.rl.db.linedb_constants import (
+from biz.services.rl.db.input_data_constants import (
     GBN_ASSIGN_EQUIP,
     GBN_D0_TARGET,
     GBN_D1_TARGET,
     GBN_TOOL,
     GBN_UPH,
     GBN_WIP,
-    LINEDB_COLUMNS,
+    INPUT_DATA_COLUMNS,
     empty_snapshot_frames,
     plan_windows_for_rule_timekey,
 )
@@ -26,7 +26,7 @@ def _numeric_attr(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series.astype(str).str.strip(), errors="coerce").fillna(0.0)
 
 
-def transform_linedb_snapshot(
+def transform_input_data_snapshot(
     df: pd.DataFrame,
     rule_timekey: str,
 ) -> Dict[str, pd.DataFrame]:
@@ -36,7 +36,7 @@ def transform_linedb_snapshot(
         return empty
 
     snap = df.copy()
-    for col in LINEDB_COLUMNS:
+    for col in INPUT_DATA_COLUMNS:
         if col not in snap.columns:
             snap[col] = ""
     snap["GBN_CD"] = snap["GBN_CD"].astype(str).str.strip().str.upper()

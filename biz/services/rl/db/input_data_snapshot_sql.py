@@ -8,20 +8,20 @@ from typing import Dict, List
 
 import pandas as pd
 
-from biz.services.rl.db.linedb_constants import (
+from biz.services.rl.db.input_data_constants import (
     GBN_ASSIGN_EQUIP,
     GBN_D0_TARGET,
     GBN_D1_TARGET,
     GBN_TOOL,
     GBN_UPH,
     GBN_WIP,
-    LINEDB_TABLE,
+    INPUT_DATA_TABLE,
     empty_snapshot_frames,
     plan_windows_for_rule_timekey,
 )
 
 _WHERE_TK = "RULE_TIMEKEY = :tk"
-_BASE = f"FROM {LINEDB_TABLE} WHERE {_WHERE_TK}"
+_BASE = f"FROM {INPUT_DATA_TABLE} WHERE {_WHERE_TK}"
 
 SQL_WIP_INFO = f"""
     SELECT PLAN_PROD_KEY, OPER_ID,
@@ -78,7 +78,7 @@ SQL_AVAIL_INFO = f"""
       AND TO_NUMBER(TRIM(ATTR_VAL)) > 0
     UNION ALL
     SELECT DISTINCT d.PLAN_PROD_KEY, d.OPER_ID, d.EQP_MODEL_CD, 'N' AS AVAIL_YN
-      FROM {LINEDB_TABLE} d
+      FROM {INPUT_DATA_TABLE} d
      WHERE d.RULE_TIMEKEY = :tk
        AND TRIM(d.PLAN_PROD_KEY) IS NOT NULL
        AND TRIM(d.PLAN_PROD_KEY) <> '-'
@@ -88,7 +88,7 @@ SQL_AVAIL_INFO = f"""
        AND TRIM(d.EQP_MODEL_CD) NOT IN ('', '-')
        AND NOT EXISTS (
            SELECT 1
-             FROM {LINEDB_TABLE} u
+             FROM {INPUT_DATA_TABLE} u
             WHERE u.RULE_TIMEKEY = d.RULE_TIMEKEY
               AND UPPER(TRIM(u.GBN_CD)) = '{GBN_UPH}'
               AND TRIM(u.ATTR_VAL) IS NOT NULL

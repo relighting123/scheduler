@@ -5,9 +5,9 @@ from typing import Dict, Optional, Tuple
 
 import pandas as pd
 
-LINEDB_TABLE = "RTS_LINEDSDB_INF"
+INPUT_DATA_TABLE = "RTS_LINEDSDB_INF"
 DAY_BOUNDARY_HOUR = 7
-LINEDB_COLUMNS = [
+INPUT_DATA_COLUMNS = [
     "RULE_TIMEKEY",
     "FAC_ID",
     "BATCH_ID",
