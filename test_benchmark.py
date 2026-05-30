@@ -1,6 +1,6 @@
 """벤치마크 데이터셋 평가 — test/data CSV 로더 사용 (DB 불필요)."""
 from biz.services.rl_scheduler_service import RLSchedulerService
-from biz.services.rl.validation.test_data_loader import TestDataLoader
+from biz.services.rl.validation.fixtures import TestDataLoader
 
 
 class MockBenchmarkService(RLSchedulerService):

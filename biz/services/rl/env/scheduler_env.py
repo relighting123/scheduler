@@ -10,7 +10,7 @@ import pandas as pd
 from gymnasium import spaces
 
 from biz.services.rl.config.policy import load_observation_and_reward_config
-from biz.services.rl.config.schema import discover_entities_from_data
+from biz.services.rl.config.env_schema import discover_entities_from_data
 from biz.services.rl.env.entities import AssignmentSegment, ConvJob, EquipmentUnit
 from biz.services.rl.env.observation import (
     ObservationNormConfig,

@@ -8,17 +8,15 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 from stable_baselines3 import PPO
 
-from biz.services.rl.infer.outputs import (
+from biz.services.rl.env.factory import collect_op20_metrics, predict_action
+from biz.services.rl.reporting import (
+    build_comparison_row,
     build_final_allocation_df,
     build_last_process_achievement_df,
-    save_inference_summary,
-)
-from biz.services.rl.env.env_factory import collect_op20_metrics, predict_action
-from biz.services.rl.validation.benchmark_report import (
-    build_comparison_row,
     build_scenario_detail_df,
     capture_initial_allocation,
     print_scenario_detail_report,
+    save_inference_summary,
 )
 
 
@@ -100,7 +98,7 @@ class BenchmarkEvaluator:
         excel_writer=None,
     ) -> Dict[str, Any]:
         from biz.services.rl.train.expert import HeuristicExpert, OptimalExpert
-        from biz.services.rl.validation.test_data_loader import TestDataLoader
+        from biz.services.rl.validation.fixtures import TestDataLoader
 
         print("\n" + "=" * 80)
         print(f" [벤치마크 데이터셋 성능 비교 - dataset: {benchmark_dataset}]")
@@ -212,7 +210,7 @@ class BenchmarkEvaluator:
         model_path="scheduler_ppo_model",
         max_steps=24,
     ) -> Dict[str, Any]:
-        from biz.services.rl.validation.test_data_loader import TestDataLoader
+        from biz.services.rl.validation.fixtures import TestDataLoader
 
         loader = TestDataLoader()
         datasets = datasets or loader.list_scenarios() or ["benchmark_dataset"]

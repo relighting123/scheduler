@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from biz.services.rl.config.schema import load_env_schema
+from biz.services.rl.config.env_schema import load_env_schema
 from biz.services.rl.env.scheduler_env import SchedulerEnv
 
 

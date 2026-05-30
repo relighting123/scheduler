@@ -1,4 +1,4 @@
-"""Load benchmark input tables and ground truth from test/data."""
+"""벤치마크용 CSV 입력·ground_truth 로드 (`test/data/<scenario>/`)."""
 import json
 from pathlib import Path
 from typing import Any, Dict, Optional

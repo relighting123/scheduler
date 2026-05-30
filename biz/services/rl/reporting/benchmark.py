@@ -1,7 +1,8 @@
-"""벤치마크 시뮬레이션 결과를 통합 리포트(초기·최종 장비대수, 생산/계획, 달성률, 가동률)로 집계합니다."""
+"""벤치마크 시뮬레이션 상세 리포트(초기·최종 장비, 생산/계획, 달성률, 가동률)."""
+
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -25,12 +26,7 @@ def build_scenario_detail_df(
     initial_eqp: np.ndarray,
     method_name: str,
 ) -> Tuple[pd.DataFrame, float]:
-    """
-    제품·공정별 리포트:
-      - 최초(초기) 장비모델별 대수 → 최종 장비모델별 대수
-      - 생산량·계획량·달성률·장비가동률(%)
-    반환: (상세 DataFrame, 전체 평균 장비가동률 %)
-    """
+    """제품·공정별 벤치마크 상세 DataFrame과 평균 장비가동률(%) 반환."""
     rows: List[Dict[str, Any]] = []
     util_rates: List[float] = []
     util_weights: List[float] = []
@@ -79,10 +75,7 @@ def build_scenario_detail_df(
 
     detail_df = pd.DataFrame(rows)
     if util_rates:
-        avg_util = round(
-            float(np.average(util_rates, weights=util_weights)),
-            2,
-        )
+        avg_util = round(float(np.average(util_rates, weights=util_weights)), 2)
     else:
         avg_util = 0.0
 

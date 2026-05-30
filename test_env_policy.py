@@ -5,7 +5,7 @@ from biz.services.rl.config.policy import load_env_policy
 from biz.services.rl.env.observation import build_observation_from_env, observation_dim
 from biz.services.rl.env.reward import RewardConfig, RewardStepContext, compute_reward
 from biz.services.rl.env.scheduler_env import SchedulerEnv
-from biz.services.rl.validation.test_data_loader import TestDataLoader
+from biz.services.rl.validation.fixtures import TestDataLoader
 
 
 def test_observation_dim_matches_env():

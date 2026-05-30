@@ -1,4 +1,4 @@
-"""RTS_RSLT_MAS row building and persistence helpers."""
+"""RTS_RSLT_MAS 출력 행 생성·Excel·DB 저장."""
 
 import os
 from datetime import datetime, timedelta
@@ -147,7 +147,7 @@ def build_rts_rslt_mas_rows(env, data, rule_timekey, crt_user_id="SYSTEM"):
 
 
 def save_rts_rslt_mas(db, env, data, rule_timekey, crt_user_id="SYSTEM"):
-    """Print, save, and optionally persist RTS_RSLT_MAS output rows."""
+    """RTS_RSLT_MAS 행 생성 후 콘솔·Excel·DB 저장."""
     rows = build_rts_rslt_mas_rows(env, data, rule_timekey, crt_user_id=crt_user_id)
     if not rows:
         print("\n[RTS_RSLT_MAS] 저장할 결과가 없습니다.")
