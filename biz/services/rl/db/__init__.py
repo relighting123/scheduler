@@ -1,19 +1,16 @@
-"""DB 인프라: 테이블 DDL, 스냅샷 데이터 조회, 환경 팩토리."""
+"""DB 레이어: DDL, 입력 데이터(EAV) 조회·변환, 학습 스냅샷 액세스."""
 
-from biz.services.rl.db.data_access import TrainingDataAccess
-from biz.services.rl.db.linedb_queries import fetch_snapshot_from_db
-from biz.services.rl.db.linedb_transform import LINEDB_TABLE, transform_linedb_snapshot
-from biz.services.rl.db.table_schema import create_learning_tables, create_output_tables
-from biz.services.rl.db.factory import SchedulerEnvFactory, collect_op20_metrics, predict_action
+from biz.services.rl.db.ddl import create_learning_tables, create_output_tables
+from biz.services.rl.db.input_data_constants import INPUT_DATA_TABLE
+from biz.services.rl.db.input_data_snapshot_pandas import transform_input_data_snapshot
+from biz.services.rl.db.input_data_snapshot_sql import fetch_snapshot_from_db
+from biz.services.rl.db.training_data_access import TrainingDataAccess
 
 __all__ = [
     "TrainingDataAccess",
-    "LINEDB_TABLE",
+    "INPUT_DATA_TABLE",
     "fetch_snapshot_from_db",
-    "transform_linedb_snapshot",
+    "transform_input_data_snapshot",
     "create_learning_tables",
     "create_output_tables",
-    "SchedulerEnvFactory",
-    "collect_op20_metrics",
-    "predict_action",
 ]

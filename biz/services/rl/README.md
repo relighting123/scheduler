@@ -3,8 +3,8 @@
 ```
 biz/services/rl/
   config/       # 설정 인프라: YAML 정책 튜닝, obs/action 스키마 저장·복원
-  db/           # DB 인프라: 테이블 DDL, 스냅샷 조회, 환경 팩토리
-  env/          # 핵심 시뮬레이션 도메인: 환경, 관측, 보상, 엔티티
+  db/           # DB 인프라: 테이블 DDL, 입력 데이터(EAV) 조회·변환, 스냅샷 액세스
+  env/          # 핵심 시뮬레이션 도메인: 환경, 관측, 보상, env 팩토리
   train/        # PPO 학습, 행동 복제(BC), 전문가 정책
   validation/   # 벤치마크 CSV 검증 (학습 없음)
   infer/        # DB 추론 결과 출력 (RTD, RTS, Excel)
@@ -20,11 +20,11 @@ biz/services/rl/
 - `schema.py` — 여러 스냅샷의 제품·공정·모델 합집합 계산 및 `.schema.json` 저장·복원
 
 ### `db/` — DB 인프라 (비즈니스 로직과 무관한 인프라)
-- `table_schema.py` — `RTS_LINEDSDB_INF` 입력·출력 2개 테이블 DDL
-- `linedb_queries.py` — Oracle SQL로 필터·집계 후 env용 7종 DataFrame 조회
-- `linedb_transform.py` — EAV pandas 폴백 변환 (D0/D1 구간 계산 포함)
-- `data_access.py` — `RTS_LINEDSDB_INF` RULE_TIMEKEY 기반 스냅샷 조회
-- `factory.py` — `SchedulerEnvFactory`: 저장된 스키마를 적용해 env 생성
+- `ddl.py` — `RTS_LINEDSDB_INF` 입력·출력 테이블 `CREATE TABLE` DDL
+- `input_data_constants.py` — EAV 테이블 메타, `GBN_CD`, D0/D1 계획 구간
+- `input_data_snapshot_sql.py` — Oracle SQL로 필터·집계 후 env용 7종 DataFrame 조회
+- `input_data_snapshot_pandas.py` — EAV pandas 폴백 변환
+- `training_data_access.py` — `RTS_LINEDSDB_INF` RULE_TIMEKEY 기반 스냅샷 조회
 
 ### `env/` — 핵심 시뮬레이션 도메인
 - `entities.py` — `ConvJob`, `AssignmentSegment`, `EquipmentUnit` 도메인 엔티티
@@ -32,6 +32,7 @@ biz/services/rl/
 - `reward.py` — 보상 항목과 터미널 보너스
 - `scheduler_env.py` — 메인 시뮬레이터 (`reset` → `step` 순서로 흐름 파악 가능)
 - `snapshot_rotation_env.py` — 에피소드마다 무작위 스냅샷 선택 래퍼
+- `env_factory.py` — `SchedulerEnvFactory`, `predict_action`, `collect_op20_metrics`
 
 ### `train/` — 학습
 - `trainer.py` — BC 사전학습 → PPO 학습 → 모델 저장 → 벤치마크 평가
@@ -64,8 +65,9 @@ biz/services/rl/
 | 관측 벡터 레이아웃 | `env/observation.py` |
 | 보상 항목 | `env/reward.py` |
 | 시뮬레이션 동역학 | `env/scheduler_env.py` |
-| DB 쿼리 | `db/data_access.py` |
-| 테이블 DDL | `db/table_schema.py` |
+| DB 쿼리 | `db/input_data_snapshot_sql.py`, `db/training_data_access.py` |
+| 테이블 DDL | `db/ddl.py` |
+| env 생성·추론 헬퍼 | `env/env_factory.py` |
 | 전문가 정책 | `train/expert.py` |
 
 기본 모델 경로: `scheduler_ppo_model` (+ `scheduler_ppo_model.schema.json`)

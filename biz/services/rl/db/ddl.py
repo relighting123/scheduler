@@ -1,12 +1,12 @@
-"""스케줄러 RL 입력/출력 테이블 DDL."""
+"""스케줄러 RL 입력·출력 테이블 DDL (CREATE TABLE)."""
 
-from biz.services.rl.db.linedb_transform import LINEDB_TABLE
+from biz.services.rl.db.input_data_constants import INPUT_DATA_TABLE
 
 
 def create_learning_tables(db):
     """RTS_LINEDSDB_INF 단일 EAV 입력 테이블 생성."""
     db.execute(f"""
-        CREATE TABLE {LINEDB_TABLE} (
+        CREATE TABLE {INPUT_DATA_TABLE} (
             RULE_TIMEKEY VARCHAR2(50) NOT NULL,
             FAC_ID VARCHAR2(50) NOT NULL,
             BATCH_ID VARCHAR2(50) NOT NULL,
