@@ -8,7 +8,7 @@ from typing import Dict, List
 
 import pandas as pd
 
-from biz.services.rl.db.linedb_transform import (
+from biz.services.rl.db.linedb_constants import (
     GBN_ASSIGN_EQUIP,
     GBN_D0_TARGET,
     GBN_D1_TARGET,

@@ -13,7 +13,7 @@ from biz.services.rl.infer.outputs import (
     build_last_process_achievement_df,
     save_inference_summary,
 )
-from biz.services.rl.db.factory import collect_op20_metrics, predict_action
+from biz.services.rl.env.env_factory import collect_op20_metrics, predict_action
 from biz.services.rl.validation.benchmark_report import (
     build_comparison_row,
     build_scenario_detail_df,

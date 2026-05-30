@@ -1,6 +1,6 @@
-"""스케줄러 RL 입력/출력 테이블 DDL."""
+"""스케줄러 RL 입력·출력 테이블 DDL (CREATE TABLE)."""
 
-from biz.services.rl.db.linedb_transform import LINEDB_TABLE
+from biz.services.rl.db.linedb_constants import LINEDB_TABLE
 
 
 def create_learning_tables(db):

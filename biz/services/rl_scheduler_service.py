@@ -1,8 +1,8 @@
 """Thin endpoint facade for scheduler RL operations."""
 
-from biz.services.rl.db.data_access import DEFAULT_RULE_TIMEKEY, TrainingDataAccess
-from biz.services.rl.db.factory import SchedulerEnvFactory
-from biz.services.rl.db.table_schema import create_learning_tables, create_output_tables
+from biz.services.rl.db.ddl import create_learning_tables, create_output_tables
+from biz.services.rl.db.training_data_access import DEFAULT_RULE_TIMEKEY, TrainingDataAccess
+from biz.services.rl.env.env_factory import SchedulerEnvFactory
 from biz.services.rl.infer.inference_runner import InferenceRunner
 from biz.services.rl.train.trainer import BenchmarkTrainer
 from biz.services.rl.validation.benchmark_evaluator import BenchmarkEvaluator
@@ -38,7 +38,7 @@ class RLSchedulerService:
 
     def init_db_scenario(self):
         """Initialize heuristic trap scenario tables (DROP -> CREATE -> INSERT)."""
-        from biz.services.rl.db.linedb_transform import (
+        from biz.services.rl.db.linedb_constants import (
             GBN_ASSIGN_EQUIP,
             GBN_D0_TARGET,
             GBN_TOOL,
