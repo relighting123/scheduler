@@ -1,49 +1,25 @@
 """스케줄러 RL 입력/출력 테이블 DDL."""
 
+from biz.services.rl.db.linedb_transform import LINEDB_TABLE
+
 
 def create_learning_tables(db):
-    """7개 RULE_TIMEKEY 기반 입력 테이블 생성."""
-    db.execute("""
-        CREATE TABLE WIP_INFO (
-            RULE_TIMEKEY VARCHAR2(14), PLAN_PROD_KEY VARCHAR2(50),
-            OPER_ID VARCHAR2(50), OPER_SEQ NUMBER, WIP_QTY NUMBER
-        )
-    """)
-    db.execute("""
-        CREATE TABLE UPH_INFO (
-            RULE_TIMEKEY VARCHAR2(14), PLAN_PROD_KEY VARCHAR2(50),
-            OPER_ID VARCHAR2(50), EQP_MODEL_CD VARCHAR2(50), UPH NUMBER
-        )
-    """)
-    db.execute("""
-        CREATE TABLE EQP_QTY_INFO (
-            RULE_TIMEKEY VARCHAR2(14), BATCH_ID VARCHAR2(50),
-            EQP_MODEL_CD VARCHAR2(50), TIME_SLOT VARCHAR2(50), EQP_QTY NUMBER
-        )
-    """)
-    db.execute("""
-        CREATE TABLE AVAIL_INFO (
-            RULE_TIMEKEY VARCHAR2(14), PLAN_PROD_KEY VARCHAR2(50),
-            OPER_ID VARCHAR2(50), EQP_MODEL_CD VARCHAR2(50), AVAIL_YN VARCHAR2(10)
-        )
-    """)
-    db.execute("""
-        CREATE TABLE BATCH_TOOL_INFO (
-            RULE_TIMEKEY VARCHAR2(14), BATCH_ID VARCHAR2(50),
-            PLAN_PROD_KEY VARCHAR2(50), OPER_ID VARCHAR2(50)
-        )
-    """)
-    db.execute("""
-        CREATE TABLE TOOL_QTY_INFO (
-            RULE_TIMEKEY VARCHAR2(14), BATCH_ID VARCHAR2(50),
-            EQP_MODEL_CD VARCHAR2(50), TOOL_QTY NUMBER
-        )
-    """)
-    db.execute("""
-        CREATE TABLE PLAN_INFO (
-            RULE_TIMEKEY VARCHAR2(14), PLAN_PROD_KEY VARCHAR2(50),
-            OPER_ID VARCHAR2(50), START_TIME VARCHAR2(50),
-            END_TIME VARCHAR2(50), PLAN_QTY NUMBER
+    """RTS_LINEDSDB_INF 단일 EAV 입력 테이블 생성."""
+    db.execute(f"""
+        CREATE TABLE {LINEDB_TABLE} (
+            RULE_TIMEKEY VARCHAR2(50) NOT NULL,
+            FAC_ID VARCHAR2(50) NOT NULL,
+            BATCH_ID VARCHAR2(50) NOT NULL,
+            PLAN_PROD_KEY VARCHAR2(200) NOT NULL,
+            OPER_ID VARCHAR2(50) NOT NULL,
+            OPER_SEQ NUMBER,
+            EQP_MODEL_CD VARCHAR2(50) NOT NULL,
+            GBN_CD VARCHAR2(50) NOT NULL,
+            ATTR_VAL VARCHAR2(50),
+            CONSTRAINT PK_RTS_LINEDSDB_INF PRIMARY KEY (
+                RULE_TIMEKEY, FAC_ID, BATCH_ID, PLAN_PROD_KEY,
+                OPER_ID, EQP_MODEL_CD, GBN_CD
+            )
         )
     """)
 

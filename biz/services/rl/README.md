@@ -20,8 +20,10 @@ biz/services/rl/
 - `schema.py` — 여러 스냅샷의 제품·공정·모델 합집합 계산 및 `.schema.json` 저장·복원
 
 ### `db/` — DB 인프라 (비즈니스 로직과 무관한 인프라)
-- `table_schema.py` — 입력 7개·출력 2개 테이블 DDL
-- `data_access.py` — RULE_TIMEKEY 기반 스냅샷 조회
+- `table_schema.py` — `RTS_LINEDSDB_INF` 입력·출력 2개 테이블 DDL
+- `linedb_queries.py` — Oracle SQL로 필터·집계 후 env용 7종 DataFrame 조회
+- `linedb_transform.py` — EAV pandas 폴백 변환 (D0/D1 구간 계산 포함)
+- `data_access.py` — `RTS_LINEDSDB_INF` RULE_TIMEKEY 기반 스냅샷 조회
 - `factory.py` — `SchedulerEnvFactory`: 저장된 스키마를 적용해 env 생성
 
 ### `env/` — 핵심 시뮬레이션 도메인

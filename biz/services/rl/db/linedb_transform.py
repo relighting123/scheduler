@@ -1,0 +1,213 @@
+"""RTS_LINEDSDB_INF EAV → env 스냅샷 변환 (pandas 폴백).
+
+DB 조회 시에는 linedb_queries.fetch_snapshot_from_db()가
+필터·집계·수치 변환을 SQL에서 수행한다.
+본 모듈의 transform_linedb_snapshot()은 EAV DataFrame이 이미 메모리에 있을 때만 사용한다.
+"""
+
+from datetime import datetime, timedelta
+from typing import Dict, Optional, Tuple
+
+import pandas as pd
+
+LINEDB_TABLE = "RTS_LINEDSDB_INF"
+DAY_BOUNDARY_HOUR = 7
+LINEDB_COLUMNS = [
+    "RULE_TIMEKEY",
+    "FAC_ID",
+    "BATCH_ID",
+    "PLAN_PROD_KEY",
+    "OPER_ID",
+    "OPER_SEQ",
+    "EQP_MODEL_CD",
+    "GBN_CD",
+    "ATTR_VAL",
+]
+
+GBN_WIP = "WIP_QTY"
+GBN_UPH = "UPH"
+GBN_ASSIGN_EQUIP = "ASSIGN_EQUIP_CNT"
+GBN_D0_TARGET = "D0_TARGET_QTY"
+GBN_D1_TARGET = "D1_TARGET_QTY"
+GBN_TOOL = "TOOL_QTY"
+
+
+def parse_rule_timekey(rule_timekey: str) -> Optional[datetime]:
+    """RULE_TIMEKEY(14자리 이상)를 datetime으로 파싱한다."""
+    s = str(rule_timekey).strip()
+    if not s:
+        return None
+    s = s.ljust(14, "0")[:14]
+    try:
+        return datetime.strptime(s, "%Y%m%d%H%M%S")
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(s[:10], "%Y%m%d%H")
+    except ValueError:
+        return None
+
+
+def _format_plan_time(dt: datetime) -> str:
+    return dt.strftime("%Y%m%d%H")
+
+
+def plan_windows_for_rule_timekey(
+    rule_timekey: str,
+    boundary_hour: int = DAY_BOUNDARY_HOUR,
+) -> Tuple[Tuple[str, str], Tuple[str, str]]:
+    """D0/D1 계획 구간을 PLAN_INFO START_TIME/END_TIME(10자리)로 반환한다.
+
+    D0: RULE_TIMEKEY 시점 ~ 다음날 boundary_hour
+    D1: D0 종료 ~ 그 다음날 boundary_hour
+    """
+    base = parse_rule_timekey(rule_timekey)
+    if base is None:
+        now = datetime.now()
+        d0_start = now
+        d0_end = (now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).replace(
+            hour=boundary_hour
+        )
+    else:
+        d0_start = base
+        day_anchor = base.replace(hour=0, minute=0, second=0, microsecond=0)
+        d0_end = (day_anchor + timedelta(days=1)).replace(hour=boundary_hour)
+        if d0_end <= d0_start:
+            d0_end = d0_end + timedelta(days=1)
+    d1_start = d0_end
+    d1_end = d1_start + timedelta(days=1)
+    return (
+        (_format_plan_time(d0_start), _format_plan_time(d0_end)),
+        (_format_plan_time(d1_start), _format_plan_time(d1_end)),
+    )
+
+
+def _numeric_attr(series: pd.Series) -> pd.Series:
+    return pd.to_numeric(series.astype(str).str.strip(), errors="coerce").fillna(0.0)
+
+
+def transform_linedb_snapshot(
+    df: pd.DataFrame,
+    rule_timekey: str,
+) -> Dict[str, pd.DataFrame]:
+    """단일 RULE_TIMEKEY에 대한 RTS_LINEDSDB_INF 행을 env 입력 7종 DataFrame으로 변환."""
+    empty = empty_snapshot_frames()
+    if df is None or df.empty:
+        return empty
+
+    snap = df.copy()
+    for col in LINEDB_COLUMNS:
+        if col not in snap.columns:
+            snap[col] = ""
+    snap["GBN_CD"] = snap["GBN_CD"].astype(str).str.strip().str.upper()
+    snap["ATTR_VAL"] = snap["ATTR_VAL"].astype(str).str.strip()
+
+    d0_window, d1_window = plan_windows_for_rule_timekey(rule_timekey)
+    time_slot = str(rule_timekey).strip()[:10]
+
+    # WIP
+    wip_rows = snap[snap["GBN_CD"] == GBN_WIP]
+    wip_info = pd.DataFrame(columns=["PLAN_PROD_KEY", "OPER_ID", "OPER_SEQ", "WIP_QTY"])
+    if not wip_rows.empty:
+        wip_info = (
+            wip_rows.groupby(["PLAN_PROD_KEY", "OPER_ID"], as_index=False)
+            .agg(OPER_SEQ=("OPER_SEQ", "max"), WIP_QTY=("ATTR_VAL", "first"))
+        )
+        wip_info["WIP_QTY"] = _numeric_attr(wip_info["WIP_QTY"])
+
+    # UPH
+    uph_rows = snap[snap["GBN_CD"] == GBN_UPH]
+    uph_info = pd.DataFrame(columns=["PLAN_PROD_KEY", "OPER_ID", "EQP_MODEL_CD", "UPH"])
+    if not uph_rows.empty:
+        uph_info = uph_rows[["PLAN_PROD_KEY", "OPER_ID", "EQP_MODEL_CD", "ATTR_VAL"]].copy()
+        uph_info = uph_info.rename(columns={"ATTR_VAL": "UPH"})
+        uph_info["UPH"] = _numeric_attr(uph_info["UPH"])
+        uph_info = uph_info[uph_info["UPH"] > 0].drop_duplicates(
+            subset=["PLAN_PROD_KEY", "OPER_ID", "EQP_MODEL_CD"]
+        )
+
+    # 설비 대수
+    assign_rows = snap[snap["GBN_CD"] == GBN_ASSIGN_EQUIP]
+    eqp_qty_info = pd.DataFrame(columns=["BATCH_ID", "EQP_MODEL_CD", "TIME_SLOT", "EQP_QTY"])
+    if not assign_rows.empty:
+        eqp_qty_info = assign_rows[["BATCH_ID", "EQP_MODEL_CD", "ATTR_VAL"]].copy()
+        eqp_qty_info["TIME_SLOT"] = time_slot
+        eqp_qty_info = eqp_qty_info.rename(columns={"ATTR_VAL": "EQP_QTY"})
+        eqp_qty_info["EQP_QTY"] = _numeric_attr(eqp_qty_info["EQP_QTY"])
+
+    # Tool 수량
+    tool_rows = snap[snap["GBN_CD"] == GBN_TOOL]
+    tool_qty_info = pd.DataFrame(columns=["BATCH_ID", "EQP_MODEL_CD", "TOOL_QTY"])
+    if not tool_rows.empty:
+        tool_qty_info = tool_rows[["BATCH_ID", "EQP_MODEL_CD", "ATTR_VAL"]].copy()
+        tool_qty_info = tool_qty_info.rename(columns={"ATTR_VAL": "TOOL_QTY"})
+        tool_qty_info["TOOL_QTY"] = _numeric_attr(tool_qty_info["TOOL_QTY"])
+
+    # Batch–제품–공정 매핑 (측정값이 있는 행 기준)
+    dim_cols = ["BATCH_ID", "PLAN_PROD_KEY", "OPER_ID"]
+    batch_tool_info = (
+        snap[snap["BATCH_ID"].astype(str).str.strip() != ""][dim_cols]
+        .drop_duplicates()
+        .reset_index(drop=True)
+    )
+    if batch_tool_info.empty:
+        batch_tool_info = empty["batch_tool_info"]
+
+    # UPH 유무로 처리 가능 여부 (UPH 없으면 진행 불가)
+    avail_info = pd.DataFrame(columns=["PLAN_PROD_KEY", "OPER_ID", "EQP_MODEL_CD", "AVAIL_YN"])
+    if not uph_info.empty:
+        avail_info = uph_info[["PLAN_PROD_KEY", "OPER_ID", "EQP_MODEL_CD"]].copy()
+        avail_info["AVAIL_YN"] = "Y"
+    else:
+        uph_candidates = snap[
+            (snap["PLAN_PROD_KEY"].astype(str).str.strip() != "")
+            & (snap["OPER_ID"].astype(str).str.strip() != "")
+            & (snap["EQP_MODEL_CD"].astype(str).str.strip() != "")
+        ][["PLAN_PROD_KEY", "OPER_ID", "EQP_MODEL_CD"]].drop_duplicates()
+        if not uph_candidates.empty:
+            avail_info = uph_candidates.copy()
+            avail_info["AVAIL_YN"] = "N"
+
+    # D0/D1 계획
+    plan_parts = []
+    for gbn, window in ((GBN_D0_TARGET, d0_window), (GBN_D1_TARGET, d1_window)):
+        target_rows = snap[snap["GBN_CD"] == gbn]
+        if target_rows.empty:
+            continue
+        part = target_rows[["PLAN_PROD_KEY", "OPER_ID", "ATTR_VAL"]].copy()
+        part["START_TIME"] = window[0]
+        part["END_TIME"] = window[1]
+        part = part.rename(columns={"ATTR_VAL": "PLAN_QTY"})
+        part["PLAN_QTY"] = _numeric_attr(part["PLAN_QTY"])
+        plan_parts.append(part)
+    plan_info = (
+        pd.concat(plan_parts, ignore_index=True)
+        if plan_parts
+        else empty["plan_info"]
+    )
+
+    return {
+        "wip_info": wip_info if not wip_info.empty else empty["wip_info"],
+        "uph_info": uph_info if not uph_info.empty else empty["uph_info"],
+        "eqp_qty_info": eqp_qty_info if not eqp_qty_info.empty else empty["eqp_qty_info"],
+        "avail_info": avail_info if not avail_info.empty else empty["avail_info"],
+        "batch_tool_info": batch_tool_info,
+        "tool_qty_info": tool_qty_info if not tool_qty_info.empty else empty["tool_qty_info"],
+        "plan_info": plan_info if not plan_info.empty else empty["plan_info"],
+    }
+
+
+def empty_snapshot_frames() -> Dict[str, pd.DataFrame]:
+    return {
+        "wip_info": pd.DataFrame(columns=["PLAN_PROD_KEY", "OPER_ID", "OPER_SEQ", "WIP_QTY"]),
+        "uph_info": pd.DataFrame(columns=["PLAN_PROD_KEY", "OPER_ID", "EQP_MODEL_CD", "UPH"]),
+        "eqp_qty_info": pd.DataFrame(columns=["BATCH_ID", "EQP_MODEL_CD", "TIME_SLOT", "EQP_QTY"]),
+        "avail_info": pd.DataFrame(
+            columns=["PLAN_PROD_KEY", "OPER_ID", "EQP_MODEL_CD", "AVAIL_YN"]
+        ),
+        "batch_tool_info": pd.DataFrame(columns=["BATCH_ID", "PLAN_PROD_KEY", "OPER_ID"]),
+        "tool_qty_info": pd.DataFrame(columns=["BATCH_ID", "EQP_MODEL_CD", "TOOL_QTY"]),
+        "plan_info": pd.DataFrame(
+            columns=["PLAN_PROD_KEY", "OPER_ID", "START_TIME", "END_TIME", "PLAN_QTY"]
+        ),
+    }

@@ -38,6 +38,15 @@ class RLSchedulerService:
 
     def init_db_scenario(self):
         """Initialize heuristic trap scenario tables (DROP -> CREATE -> INSERT)."""
+        from biz.services.rl.db.linedb_transform import (
+            GBN_ASSIGN_EQUIP,
+            GBN_D0_TARGET,
+            GBN_TOOL,
+            GBN_UPH,
+            GBN_WIP,
+            LINEDB_TABLE,
+        )
+
         print("\n[DB 설정] DB 시나리오 초기화를 시작합니다 (Heuristic Trap Scenario)...")
         tables = [
             "WIP_INFO",
@@ -47,6 +56,7 @@ class RLSchedulerService:
             "BATCH_TOOL_INFO",
             "TOOL_QTY_INFO",
             "PLAN_INFO",
+            LINEDB_TABLE,
             "RTD_CONV_INF",
             "RTS_RSLT_MAS",
         ]
@@ -60,37 +70,27 @@ class RLSchedulerService:
         create_learning_tables(self.db)
         create_output_tables(self.db)
         tk = self.DEFAULT_RULE_TIMEKEY
+        fac = "FAC1"
 
-        self.db.execute(f"INSERT INTO WIP_INFO VALUES ('{tk}', 'P1', 'OP10', 10, 5000)")
-        self.db.execute(f"INSERT INTO WIP_INFO VALUES ('{tk}', 'P1', 'OP20', 20, 500)")
-        self.db.execute(f"INSERT INTO UPH_INFO VALUES ('{tk}', 'P1', 'OP10', 'MODEL_A', 100)")
-        self.db.execute(f"INSERT INTO UPH_INFO VALUES ('{tk}', 'P1', 'OP20', 'MODEL_A', 100)")
-        self.db.execute(
-            f"INSERT INTO EQP_QTY_INFO VALUES ('{tk}', 'B1', 'MODEL_A', '2026051800', 5)"
-        )
-        self.db.execute(
-            f"INSERT INTO EQP_QTY_INFO VALUES ('{tk}', 'B2', 'MODEL_A', '2026051800', 5)"
-        )
-        self.db.execute(
-            f"INSERT INTO AVAIL_INFO VALUES ('{tk}', 'P1', 'OP10', 'MODEL_A', 'Y')"
-        )
-        self.db.execute(
-            f"INSERT INTO AVAIL_INFO VALUES ('{tk}', 'P1', 'OP20', 'MODEL_A', 'Y')"
-        )
-        self.db.execute(
-            f"INSERT INTO BATCH_TOOL_INFO VALUES ('{tk}', 'B1', 'P1', 'OP10')"
-        )
-        self.db.execute(
-            f"INSERT INTO BATCH_TOOL_INFO VALUES ('{tk}', 'B2', 'P1', 'OP20')"
-        )
-        self.db.execute(
-            f"INSERT INTO PLAN_INFO VALUES ('{tk}', 'P1', 'OP10', '2026051800', '2026051824', 4000)"
-        )
-        self.db.execute(
-            f"INSERT INTO PLAN_INFO VALUES ('{tk}', 'P1', 'OP20', '2026051800', '2026051824', 4000)"
-        )
+        def insert_linedb(batch, prod, oper, oper_seq, model, gbn, val):
+            self.db.execute(
+                f"INSERT INTO {LINEDB_TABLE} VALUES ("
+                f"'{tk}', '{fac}', '{batch}', '{prod}', '{oper}', "
+                f"{oper_seq}, '{model}', '{gbn}', '{val}')"
+            )
 
-        print("[성공] DB 시나리오 초기화가 완료되었습니다 (WIP_INFO 등 7개 테이블).")
+        insert_linedb("B1", "P1", "OP10", 10, "-", GBN_WIP, "5000")
+        insert_linedb("B2", "P1", "OP20", 20, "-", GBN_WIP, "500")
+        insert_linedb("B1", "P1", "OP10", 10, "MODEL_A", GBN_UPH, "100")
+        insert_linedb("B2", "P1", "OP20", 20, "MODEL_A", GBN_UPH, "100")
+        insert_linedb("B1", "P1", "OP10", 10, "MODEL_A", GBN_ASSIGN_EQUIP, "5")
+        insert_linedb("B2", "P1", "OP20", 20, "MODEL_A", GBN_ASSIGN_EQUIP, "5")
+        insert_linedb("B1", "P1", "OP10", 10, "MODEL_A", GBN_TOOL, "10")
+        insert_linedb("B2", "P1", "OP20", 20, "MODEL_A", GBN_TOOL, "10")
+        insert_linedb("B1", "P1", "OP10", 10, "-", GBN_D0_TARGET, "4000")
+        insert_linedb("B2", "P1", "OP20", 20, "-", GBN_D0_TARGET, "4000")
+
+        print(f"[성공] DB 시나리오 초기화가 완료되었습니다 ({LINEDB_TABLE}).")
 
     def generate_expert_data(self, env, num_samples=5000, expert_cls=None, target_allocation=None):
         return self._trainer.generate_expert_data(

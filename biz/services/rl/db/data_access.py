@@ -2,11 +2,36 @@
 
 import pandas as pd
 
+from biz.services.rl.db.linedb_queries import fetch_snapshot_from_db
+from biz.services.rl.db.linedb_transform import (
+    LINEDB_COLUMNS,
+    LINEDB_TABLE,
+    empty_snapshot_frames,
+    transform_linedb_snapshot,
+)
+
 DEFAULT_RULE_TIMEKEY = "20251020070000"
+
+_LINEDB_SELECT = (
+    "SELECT RULE_TIMEKEY, FAC_ID, BATCH_ID, PLAN_PROD_KEY, OPER_ID, "
+    "OPER_SEQ, EQP_MODEL_CD, GBN_CD, ATTR_VAL "
+    f"FROM {LINEDB_TABLE}"
+)
 
 
 class TrainingDataAccess:
     """DB에서 스케줄러 학습 스냅샷을 로드하고 필터링한다."""
+
+    @staticmethod
+    def _row_value(row, column: str):
+        """Oracle rowfactory 소문자 컬럼명 호환."""
+        if not row:
+            return None
+        target = column.upper()
+        for key, value in row.items():
+            if str(key).upper() == target:
+                return value
+        return None
 
     def __init__(self, db_manager, default_rule_timekey=DEFAULT_RULE_TIMEKEY):
         self.db = db_manager
@@ -17,10 +42,11 @@ class TrainingDataAccess:
             return str(rule_timekey)
         try:
             row = self.db.select_one(
-                "SELECT MAX(RULE_TIMEKEY) AS RULE_TIMEKEY FROM WIP_INFO"
+                f"SELECT MAX(RULE_TIMEKEY) AS RULE_TIMEKEY FROM {LINEDB_TABLE}"
             )
-            if row and row.get("RULE_TIMEKEY"):
-                return str(row["RULE_TIMEKEY"])
+            tk_val = self._row_value(row, "RULE_TIMEKEY")
+            if tk_val:
+                return str(tk_val)
         except Exception:
             pass
         return self.default_rule_timekey
@@ -47,18 +73,67 @@ class TrainingDataAccess:
 
         try:
             rows = self.db.select_list(
-                "SELECT DISTINCT RULE_TIMEKEY FROM WIP_INFO ORDER BY RULE_TIMEKEY"
+                f"SELECT DISTINCT RULE_TIMEKEY FROM {LINEDB_TABLE} ORDER BY RULE_TIMEKEY"
             )
-            keys = [
-                str(r["RULE_TIMEKEY"])
-                for r in rows
-                if r.get("RULE_TIMEKEY") and from_tk <= str(r["RULE_TIMEKEY"]) <= to_tk
-            ]
+            keys = []
+            for r in rows:
+                tk_val = self._row_value(r, "RULE_TIMEKEY")
+                if tk_val and from_tk <= str(tk_val) <= to_tk:
+                    keys.append(str(tk_val))
             if keys:
                 return keys
         except Exception:
             pass
         return [self.resolve_rule_timekey(to_tk)]
+
+    def fetch_linedb_rows(self, rule_timekey=None):
+        """RTS_LINEDSDB_INF 원본 EAV 행 조회 (디버그·pandas 변환용)."""
+        if rule_timekey is not None:
+            resolved = str(rule_timekey)
+            rows = self.db.select_list(
+                f"{_LINEDB_SELECT} WHERE RULE_TIMEKEY = :tk",
+                {"tk": resolved},
+            )
+        else:
+            rows = self.db.select_list(_LINEDB_SELECT)
+
+        if not rows:
+            return pd.DataFrame(columns=LINEDB_COLUMNS)
+        return pd.DataFrame(rows, columns=LINEDB_COLUMNS)
+
+    def fetch_snapshot(self, rule_timekey: str):
+        """SQL 집계·필터로 env 입력 7종 DataFrame을 조회한다."""
+        return fetch_snapshot_from_db(self.db, rule_timekey)
+
+    def fetch_raw_tables(self):
+        """하위 호환: RULE_TIMEKEY 포함 7종 테이블 형태 raw 프레임."""
+        try:
+            rows = self.db.select_list(
+                f"SELECT DISTINCT RULE_TIMEKEY FROM {LINEDB_TABLE} ORDER BY RULE_TIMEKEY"
+            )
+            keys = [
+                str(self._row_value(r, "RULE_TIMEKEY"))
+                for r in rows
+                if self._row_value(r, "RULE_TIMEKEY")
+            ]
+        except Exception:
+            keys = []
+
+        if not keys:
+            return self._empty_raw_frames()
+
+        raw = {}
+        for tk in keys:
+            snap = self.fetch_snapshot(tk)
+            for key, part in snap.items():
+                part = part.copy()
+                part.insert(0, "RULE_TIMEKEY", tk)
+                if key not in raw:
+                    raw[key] = part
+                else:
+                    raw[key] = pd.concat([raw[key], part], ignore_index=True)
+        empty = self._empty_raw_frames()
+        return {k: raw.get(k, empty[k]) for k in empty}
 
     @staticmethod
     def filter_data_by_rule_timekey(data, rule_timekey):
@@ -75,106 +150,15 @@ class TrainingDataAccess:
         return filtered
 
     def _empty_raw_frames(self):
-        return {
-            "wip_info": pd.DataFrame(
-                columns=["RULE_TIMEKEY", "PLAN_PROD_KEY", "OPER_ID", "OPER_SEQ", "WIP_QTY"]
-            ),
-            "uph_info": pd.DataFrame(
-                columns=["RULE_TIMEKEY", "PLAN_PROD_KEY", "OPER_ID", "EQP_MODEL_CD", "UPH"]
-            ),
-            "eqp_qty_info": pd.DataFrame(
-                columns=["RULE_TIMEKEY", "BATCH_ID", "EQP_MODEL_CD", "TIME_SLOT", "EQP_QTY"]
-            ),
-            "avail_info": pd.DataFrame(
-                columns=["RULE_TIMEKEY", "PLAN_PROD_KEY", "OPER_ID", "EQP_MODEL_CD", "AVAIL_YN"]
-            ),
-            "batch_tool_info": pd.DataFrame(
-                columns=["RULE_TIMEKEY", "BATCH_ID", "PLAN_PROD_KEY", "OPER_ID"]
-            ),
-            "tool_qty_info": pd.DataFrame(
-                columns=["RULE_TIMEKEY", "BATCH_ID", "EQP_MODEL_CD", "TOOL_QTY"]
-            ),
-            "plan_info": pd.DataFrame(
-                columns=[
-                    "RULE_TIMEKEY",
-                    "PLAN_PROD_KEY",
-                    "OPER_ID",
-                    "START_TIME",
-                    "END_TIME",
-                    "PLAN_QTY",
-                ]
-            ),
-        }
-
-    def fetch_raw_tables(self):
-        wip_data = pd.DataFrame(
-            self.db.select_list(
-                "SELECT RULE_TIMEKEY, PLAN_PROD_KEY, OPER_ID, OPER_SEQ, WIP_QTY FROM WIP_INFO"
-            ),
-            columns=["RULE_TIMEKEY", "PLAN_PROD_KEY", "OPER_ID", "OPER_SEQ", "WIP_QTY"],
-        )
-        uph_data = pd.DataFrame(
-            self.db.select_list(
-                "SELECT RULE_TIMEKEY, PLAN_PROD_KEY, OPER_ID, EQP_MODEL_CD, UPH FROM UPH_INFO"
-            ),
-            columns=["RULE_TIMEKEY", "PLAN_PROD_KEY", "OPER_ID", "EQP_MODEL_CD", "UPH"],
-        )
-        eqp_qty_data = pd.DataFrame(
-            self.db.select_list(
-                "SELECT RULE_TIMEKEY, BATCH_ID, EQP_MODEL_CD, TIME_SLOT, EQP_QTY FROM EQP_QTY_INFO"
-            ),
-            columns=["RULE_TIMEKEY", "BATCH_ID", "EQP_MODEL_CD", "TIME_SLOT", "EQP_QTY"],
-        )
-        avail_data = pd.DataFrame(
-            self.db.select_list(
-                "SELECT RULE_TIMEKEY, PLAN_PROD_KEY, OPER_ID, EQP_MODEL_CD, AVAIL_YN FROM AVAIL_INFO"
-            ),
-            columns=["RULE_TIMEKEY", "PLAN_PROD_KEY", "OPER_ID", "EQP_MODEL_CD", "AVAIL_YN"],
-        )
-        batch_tool_data = pd.DataFrame(
-            self.db.select_list(
-                "SELECT RULE_TIMEKEY, BATCH_ID, PLAN_PROD_KEY, OPER_ID FROM BATCH_TOOL_INFO"
-            ),
-            columns=["RULE_TIMEKEY", "BATCH_ID", "PLAN_PROD_KEY", "OPER_ID"],
-        )
-        tool_qty_data = pd.DataFrame(
-            self.db.select_list(
-                "SELECT RULE_TIMEKEY, BATCH_ID, EQP_MODEL_CD, TOOL_QTY FROM TOOL_QTY_INFO"
-            ),
-            columns=["RULE_TIMEKEY", "BATCH_ID", "EQP_MODEL_CD", "TOOL_QTY"],
-        )
-        plan_data = pd.DataFrame(
-            self.db.select_list(
-                "SELECT RULE_TIMEKEY, PLAN_PROD_KEY, OPER_ID, START_TIME, END_TIME, PLAN_QTY FROM PLAN_INFO"
-            ),
-            columns=[
-                "RULE_TIMEKEY",
-                "PLAN_PROD_KEY",
-                "OPER_ID",
-                "START_TIME",
-                "END_TIME",
-                "PLAN_QTY",
-            ],
-        )
-
-        empty = self._empty_raw_frames()
-        return {
-            "wip_info": wip_data if not wip_data.empty else empty["wip_info"],
-            "uph_info": uph_data if not uph_data.empty else empty["uph_info"],
-            "eqp_qty_info": eqp_qty_data if not eqp_qty_data.empty else empty["eqp_qty_info"],
-            "avail_info": avail_data if not avail_data.empty else empty["avail_info"],
-            "batch_tool_info": batch_tool_data
-            if not batch_tool_data.empty
-            else empty["batch_tool_info"],
-            "tool_qty_info": tool_qty_data if not tool_qty_data.empty else empty["tool_qty_info"],
-            "plan_info": plan_data if not plan_data.empty else empty["plan_info"],
-        }
+        frames = {}
+        for key, df in empty_snapshot_frames().items():
+            frames[key] = pd.DataFrame(columns=["RULE_TIMEKEY"] + list(df.columns))
+        return frames
 
     def fetch_data(self, rule_timekey=None):
         resolved_tk = self.resolve_rule_timekey(rule_timekey)
         try:
-            raw = self.fetch_raw_tables()
-            data = self.filter_data_by_rule_timekey(raw, resolved_tk)
+            data = self.fetch_snapshot(resolved_tk)
             print(f"[성공] DB에서 RULE_TIMEKEY={resolved_tk} 스냅샷 데이터를 조회했습니다.")
             return data
         except Exception as exc:
@@ -182,7 +166,11 @@ class TrainingDataAccess:
             print(
                 "데이터를 조회할 수 없습니다. DB 초기화(init_db_scenario)가 올바르게 수행되었는지 확인하세요."
             )
-            return self.filter_data_by_rule_timekey(self._empty_raw_frames(), resolved_tk)
+            try:
+                df = self.fetch_linedb_rows(rule_timekey=resolved_tk)
+                return transform_linedb_snapshot(df, rule_timekey=resolved_tk)
+            except Exception:
+                return empty_snapshot_frames()
 
     def fetch_training_snapshots(
         self,
