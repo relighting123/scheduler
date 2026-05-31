@@ -113,10 +113,24 @@ python3 run.py infer   # RULE_TIMEKEY=DB MAX
 python3 run.py benchmark --benchmark-dataset benchmark_dataset
 ```
 
-**정적 분석 (RL 없이 Input만, 빠른 what-if)**
+**정적 배치 (권장) — 시간대 없이 “몇 대 둘지”만 산출**
 ```bash
-python3 run.py plan-allocate --benchmark-dataset benchmark_dataset
+# 결과: 콘솔 표 + output/static_allocation_*.json, *.csv
+python3 run.py allocate --benchmark-dataset benchmark_dataset
+
+# 현재 Input 배치 그대로 평가만
+python3 run.py allocate --benchmark-dataset benchmark_dataset --no-optimize
+
+# DB 스냅샷
+python3 run.py allocate --timekey 20251020070000
 ```
+
+API: `action`: `static_allocate`  
+`parameters`: `{ "scenario": "benchmark_dataset", "optimize": true }`
+
+결과 예 (`allocation_table`):
+| PLAN_PROD_KEY | OPER_ID | EQP_MODEL_CD | EQP_QTY |
+| P1 | OP10 | MODEL_A | 5 |
 
 **API parameters (rl_train)**
 - `from_rule_timekey`, `to_rule_timekey`, `rule_timekey`, `run_test_eval`, `benchmark_dataset`

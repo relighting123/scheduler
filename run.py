@@ -7,8 +7,8 @@ def main():
     parser = argparse.ArgumentParser(description="강화학습 스케줄러 간편 실행기 (CLI)")
     parser.add_argument(
         "mode",
-        choices=["train", "infer", "benchmark", "plan-allocate"],
-        help="실행 모드: train, infer, benchmark, plan-allocate(Input-only 장비 배치 분석)",
+        choices=["allocate", "plan-allocate", "train", "infer", "benchmark"],
+        help="allocate=정적 배치(권장), train/infer=시간대별 RL",
     )
     parser.add_argument(
         "--from-timekey",
@@ -59,6 +59,23 @@ def main():
         action="store_true",
         help="Evaluate only the scenario passed with --benchmark-dataset.",
     )
+    parser.add_argument(
+        "--no-optimize",
+        action="store_true",
+        help="allocate: 현재 Input 배치만 평가 (재배치 탐색 생략)",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="allocate: 상세 분석 리포트 추가 출력",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="output",
+        dest="output_dir",
+        help="allocate: JSON/CSV 저장 폴더 (기본 output/)",
+    )
 
     args = parser.parse_args()
 
@@ -104,15 +121,17 @@ def main():
         rl_service.run_benchmark_evaluation(datasets=datasets)
         print("벤치마크 데이터셋 평가 완료.")
 
-    elif args.mode == "plan-allocate":
-        print("[계획 배치 분석] Input-only 정적 최적화 (시뮬레이터 미사용)")
-        plan_allocation_service.run_plan_allocation(
+    elif args.mode in ("allocate", "plan-allocate"):
+        print("[정적 배치] 계획제품×공정×장비모델별 대수 (시간대 판단 없음)")
+        plan_allocation_service.run_static_allocation(
             repo,
             rule_timekey=args.timekey,
             scenario=args.benchmark_dataset,
-            optimize=True,
+            optimize=not args.no_optimize,
+            verbose=args.verbose,
+            output_dir=args.output_dir,
         )
-        print("계획 기반 장비 배치 분석이 완료되었습니다.")
+        print("정적 배치 결과 생성 완료.")
 
 if __name__ == "__main__":
     main()

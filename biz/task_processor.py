@@ -68,20 +68,27 @@ class TaskProcessor:
             datasets = params.get("benchmark_datasets")
             rl_service.run_benchmark_evaluation(datasets=datasets)
             return True
-        elif action in ("plan_allocation", "plan_optimize", "plan_allocation_optimize"):
-            logger.info("Starting plan-based equipment allocation analysis (input-only)...")
+        elif action in (
+            "static_allocate",
+            "static_allocation",
+            "plan_allocation",
+            "plan_optimize",
+            "plan_allocation_optimize",
+        ):
+            logger.info("Static equipment allocation (no time-slot simulation)...")
             input_tk = params.get("rule_timekey") or (
                 rule_timekey if rule_timekey not in ("N/A", "") else None
             )
-            result = plan_allocation_service.run_plan_allocation(
+            return plan_allocation_service.run_static_allocation(
                 self.repo,
                 rule_timekey=input_tk,
                 scenario=params.get("benchmark_dataset") or params.get("scenario"),
                 optimize=params.get("optimize", True),
-                include_marginal=params.get("include_marginal", True),
+                include_marginal=params.get("include_marginal", False),
                 max_iterations=int(params.get("max_iterations", 200)),
+                output_dir=params.get("output_dir", "output"),
+                verbose=params.get("verbose", False),
             )
-            return result
         else:
             logger.warning(f"Unknown action: {action}")
             return False
