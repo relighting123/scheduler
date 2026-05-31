@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from pathlib import Path
 from typing import Any, Dict, Optional
 
+from biz.services.plan_allocation.data import InputDataAccess
 from biz.services.plan_allocation.optimizer import PlanAllocationOptimizer
 from biz.services.plan_allocation.report import format_allocation_report, result_as_json
-from biz.services.rl.validation.test_data_loader import TestDataLoader
+from biz.services.plan_allocation.test_data_loader import TestDataLoader
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +22,7 @@ def run_plan_allocation(
     include_marginal: bool = True,
     max_iterations: int = 200,
 ) -> Dict[str, Any]:
-    """Input 7종만으로 정적 계획 달성·장비 배치 분석을 수행한다.
-
-    - DB: TrainingDataAccess 경로 (repo가 있을 때)
-    - CSV: test/data/<scenario> (scenario 지정 시)
-    """
+    """Input 7종만으로 정적 계획 달성·장비 배치 분석을 수행한다."""
     data = _load_input_data(repo, rule_timekey=rule_timekey, scenario=scenario)
     optimizer = PlanAllocationOptimizer(data, max_iterations=max_iterations)
     result = optimizer.run(optimize=optimize)
@@ -46,14 +41,13 @@ def _load_input_data(
     scenario: Optional[str],
 ) -> Dict:
     if scenario:
-        loader = TestDataLoader()
-        return loader.load_for_env(scenario=scenario, rule_timekey=rule_timekey)
+        return TestDataLoader().load_snapshot(
+            scenario=scenario, rule_timekey=rule_timekey
+        )
 
     if repo is not None:
-        from biz.services.rl.db.training_data_access import TrainingDataAccess
+        return InputDataAccess(repo).fetch_data(rule_timekey=rule_timekey)
 
-        access = TrainingDataAccess(repo)
-        return access.fetch_data(rule_timekey=rule_timekey)
-
-    loader = TestDataLoader()
-    return loader.load_for_env(scenario="benchmark_dataset", rule_timekey=rule_timekey)
+    return TestDataLoader().load_snapshot(
+        scenario="benchmark_dataset", rule_timekey=rule_timekey
+    )

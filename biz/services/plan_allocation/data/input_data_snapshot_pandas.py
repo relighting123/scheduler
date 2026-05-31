@@ -9,7 +9,7 @@ from typing import Dict
 
 import pandas as pd
 
-from biz.services.rl.db.input_data_constants import (
+from biz.services.plan_allocation.data.input_data_constants import (
     GBN_ASSIGN_EQUIP,
     GBN_D0_TARGET,
     GBN_D1_TARGET,

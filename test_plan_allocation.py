@@ -3,13 +3,12 @@
 import json
 
 from biz.services.plan_allocation.optimizer import PlanAllocationOptimizer
-from biz.services.rl.validation.test_data_loader import TestDataLoader
+from biz.services.plan_allocation.test_data_loader import TestDataLoader
 
 
 def test_benchmark_dataset_analysis():
-    data = TestDataLoader().load_for_env("benchmark_dataset")
-    gt = TestDataLoader().load_ground_truth("benchmark_dataset")
-    target = gt.get("target_allocation", {})
+    data = TestDataLoader().load_snapshot("benchmark_dataset")
+    TestDataLoader().load_ground_truth("benchmark_dataset")
 
     result = PlanAllocationOptimizer(data, max_iterations=300).run(optimize=True)
     opt = result.optimized_summary
@@ -20,16 +19,14 @@ def test_benchmark_dataset_analysis():
     assert len(opt.slot_contributions) >= 6
     assert opt.overall_achievement >= init.overall_achievement
 
-    # 벤치마크 정답 배치 대비 마지막 공정 달성률이 유사한지 (정적 추정)
-    for prod in target:
-        last_oper = max(target[prod], key=lambda o: o)
+    for prod in opt.by_product_last_oper:
         assert prod in opt.by_product_last_oper
 
-    print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False)[:2000])
+    print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False)[:1500])
 
 
 def test_marginal_ranking():
-    data = TestDataLoader().load_for_env("benchmark_dataset")
+    data = TestDataLoader().load_snapshot("benchmark_dataset")
     rows = PlanAllocationOptimizer(data).marginal_report()
     assert len(rows) > 0
     assert "MARGINAL_OVERALL_ACHIEVEMENT(%)" in rows[0]

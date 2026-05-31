@@ -1,11 +1,12 @@
-"""Load benchmark input tables and ground truth from test/data."""
+"""test/data CSV 시나리오 로더."""
+
 import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pandas as pd
 
-WORKSPACE_ROOT = Path(__file__).resolve().parents[4]
+WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 TEST_DATA_ROOT = WORKSPACE_ROOT / "test" / "data"
 
 INPUT_TABLE_FILES = [
@@ -30,7 +31,7 @@ DATA_KEY_BY_FILE = {
 
 
 class TestDataLoader:
-    """Manage CSV scenarios under test/data/<scenario>/."""
+    """test/data/<scenario>/ Input 7종 CSV 로드."""
 
     def __init__(self, root: Optional[Path] = None):
         self.root = Path(root) if root else TEST_DATA_ROOT
@@ -103,7 +104,7 @@ class TestDataLoader:
                 out[col] = pd.to_numeric(out[col], errors="coerce")
         return out
 
-    def load_for_env(
+    def load_snapshot(
         self,
         scenario: str = "benchmark_dataset",
         rule_timekey: Optional[str] = None,
