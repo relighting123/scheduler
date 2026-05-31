@@ -4,11 +4,15 @@ from biz.services.rl_scheduler_service import RLSchedulerService
 from biz.services import plan_allocation_service
 
 def main():
-    parser = argparse.ArgumentParser(description="강화학습 스케줄러 간편 실행기 (CLI)")
+    parser = argparse.ArgumentParser(
+        description="장비 배치 CLI — allocate(정적·학습없음) / train·infer(RL)",
+        epilog="전체 명령·API·옵션: COMMANDS.md 참고",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "mode",
         choices=["allocate", "plan-allocate", "train", "infer", "benchmark"],
-        help="allocate=정적 배치(권장), train/infer=시간대별 RL",
+        help="allocate|plan-allocate: 정적 대수(학습X), train|infer: RL, benchmark: 평가",
     )
     parser.add_argument(
         "--from-timekey",
@@ -44,14 +48,14 @@ def main():
     parser.add_argument(
         "--no-test-eval",
         action="store_true",
-        help="?? ? validation ?? ??",
+        help="train: 학습 후 벤치마크 자동 평가 생략",
     )
     parser.add_argument(
         "--benchmark-dataset",
         type=str,
         default="benchmark_dataset",
         dest="benchmark_dataset",
-        help="validation? ??? test/data ?? ???? ID (??: benchmark_dataset)",
+        help="CSV 시나리오 ID (test/data/<ID>/), allocate·train·benchmark 공통",
     )
 
     parser.add_argument(

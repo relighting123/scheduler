@@ -84,7 +84,20 @@ PLAN PROD KEY와 OPER ID별로 배치된 장비들의 UPH를 통해 UPH만큼 �
  batch id가 달라지는 경우는 tool 교체가 일어나며 to batch id의 tool은 소진하고 from batch id의 tool은 반환한다. 또한 1시간동안은 비가용 상태가 되고 1시간 후 to batch id로 가용상태가 된다.
   동일 batch id이나 plan prod key인 경우는 tool 교체를 하지 않아도 되며 시간소요도 없다
 
-[7] 학습·추론 RULE_TIMEKEY 운영
+[7] 명령어
+
+**전체 CLI·API·옵션 표는 [`COMMANDS.md`](COMMANDS.md) 를 참고하세요.**
+
+요약:
+
+| 명령 | 학습 | 용도 |
+|------|------|------|
+| `python3 run.py allocate` | 없음 | 정적 배치표 (권장) |
+| `python3 run.py train` | PPO | 시간대별 RL 정책 학습 |
+| `python3 run.py infer` | 모델 필요 | RL 추론 |
+| `python3 run.py benchmark` | 모델 권장 | 벤치마크 평가 |
+
+[7-1] 학습·추론 RULE_TIMEKEY 운영
 
 **학습**
 - `from_rule_timekey` ~ `to_rule_timekey` 구간의 스냅샷을 DB에서 조회하여 학습 (구간에 여러 키가 있으면 에피소드마다 무작위 스냅샷).
