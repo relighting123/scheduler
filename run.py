@@ -1,13 +1,14 @@
 import argparse
 from core.repository import BaseRepository
 from biz.services.rl_scheduler_service import RLSchedulerService
+from biz.services import plan_allocation_service
 
 def main():
     parser = argparse.ArgumentParser(description="강화학습 스케줄러 간편 실행기 (CLI)")
     parser.add_argument(
         "mode",
-        choices=["train", "infer", "benchmark"],
-        help="실행 모드: train(학습), infer(추론), benchmark(벤치마크 데이터셋 평가)",
+        choices=["train", "infer", "benchmark", "plan-allocate"],
+        help="실행 모드: train, infer, benchmark, plan-allocate(Input-only 장비 배치 분석)",
     )
     parser.add_argument(
         "--from-timekey",
@@ -102,6 +103,16 @@ def main():
         datasets = None if not args.single_benchmark else [args.benchmark_dataset]
         rl_service.run_benchmark_evaluation(datasets=datasets)
         print("벤치마크 데이터셋 평가 완료.")
+
+    elif args.mode == "plan-allocate":
+        print("[계획 배치 분석] Input-only 정적 최적화 (시뮬레이터 미사용)")
+        plan_allocation_service.run_plan_allocation(
+            repo,
+            rule_timekey=args.timekey,
+            scenario=args.benchmark_dataset,
+            optimize=True,
+        )
+        print("계획 기반 장비 배치 분석이 완료되었습니다.")
 
 if __name__ == "__main__":
     main()
