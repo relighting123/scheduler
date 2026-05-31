@@ -2,5 +2,10 @@ fastapi
 uvicorn
 pandas
 numpy
+torch
+stable-baselines3
+gymnasium
 oracledb
 pyyaml
+matplotlib
+openpyxl

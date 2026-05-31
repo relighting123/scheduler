@@ -1,0 +1,30 @@
+{
+  "scenario_id": "benchmark_sudden_demand_shift",
+  "rule_timekey": "20251020090000",
+  "description": "설비의 초기 배치가 P1에 집중되어 있지만 실제 주문 수요는 P2와 P3에 몰려 있어, 다량의 신속한 설비 전환(Conversion)이 필수적인 시나리오",
+  "evaluation": {
+    "last_oper_id": "OP20",
+    "products": ["P1", "P2", "P3"],
+    "metric_keys": [
+      "P1_OP20_ACHIEVEMENT",
+      "P2_OP20_ACHIEVEMENT",
+      "P3_OP20_ACHIEVEMENT",
+      "AVG_ACHIEVEMENT",
+      "TRANSFERS"
+    ]
+  },
+  "optimal_reference": {
+    "note": "evaluate_on_benchmark_dataset() 실행 시 OptimalExpert로 재산출하여 비교합니다.",
+    "method": "OptimalExpert",
+    "P1_OP20_ACHIEVEMENT": null,
+    "P2_OP20_ACHIEVEMENT": null,
+    "P3_OP20_ACHIEVEMENT": null,
+    "AVG_ACHIEVEMENT": null,
+    "TRANSFERS": null
+  },
+  "target_allocation": {
+    "P1": {"OP10": {"MODEL_A": 3}, "OP20": {"MODEL_A": 3}},
+    "P2": {"OP10": {"MODEL_B": 3}, "OP20": {"MODEL_B": 3}},
+    "P3": {"OP10": {"MODEL_C": 3}, "OP20": {"MODEL_C": 3}}
+  }
+}
