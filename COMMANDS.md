@@ -25,20 +25,26 @@ pip install -r requirements.txt
 
 Input 스냅샷 7종만 사용합니다. 시간대(slot) 시뮬·PPO 학습을 하지 않습니다.
 
-### 기본
+### 기본 (CSV)
 
 ```bash
-# test/data CSV 사용 (DB 불필요)
 python3 run.py allocate --benchmark-dataset benchmark_dataset
 ```
 
-### DB 스냅샷
+### 실제 DB
 
 ```bash
-python3 run.py allocate --timekey 20251020070000
+python3 run.py allocate --use-db --timekey 20251020070000
+python3 run.py allocate --use-db
 ```
 
-`--timekey` 생략 시 DB `MAX(RULE_TIMEKEY)` (Oracle 연결 필요).
+| 항목 | 내용 |
+|------|------|
+| 접속 | `config.yaml` → `databases.primary` |
+| Input 테이블 | `RTS_LINEDSDB_INF` (EAV, GBN: WIP/UPH/ASSIGN_EQUIP/…) |
+| RULE_TIMEKEY | `--timekey` 또는 DB `MAX(RULE_TIMEKEY)` |
+
+`--use-db` 가 없으면 **항상 CSV** (`--benchmark-dataset`)만 사용합니다.
 
 ### 옵션
 
@@ -109,7 +115,11 @@ python3 run.py train-allocate --benchmark-dataset benchmark_dataset --steps 5000
 ### 추론
 
 ```bash
+# CSV
 python3 run.py infer-allocate --benchmark-dataset benchmark_dataset
+
+# 실제 DB
+python3 run.py infer-allocate --use-db --timekey 20251020070000
 ```
 
 모델이 없으면 **탐욕 Expert**로 동작합니다.  

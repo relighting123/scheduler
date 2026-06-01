@@ -63,7 +63,12 @@ def main():
         type=str,
         default="benchmark_dataset",
         dest="benchmark_dataset",
-        help="CSV 시나리오 ID (test/data/<ID>/), allocate·train·benchmark 공통",
+        help="CSV 시나리오 ID (test/data/<ID>/). --use-db 없을 때 사용",
+    )
+    parser.add_argument(
+        "--use-db",
+        action="store_true",
+        help="allocate/train-allocate/infer-allocate: Oracle RTS_LINEDSDB_INF 조회 (CSV 대신)",
     )
 
     parser.add_argument(
@@ -105,6 +110,8 @@ def main():
 
     repo = BaseRepository()
     rl_service = RLSchedulerService(db_manager=repo)
+    # CSV 시나리오 vs DB: --use-db 이면 InputDataAccess 경로
+    data_scenario = None if args.use_db else args.benchmark_dataset
 
     if not args.no_init_db and args.mode in ("train", "infer"):
         rl_service.init_db_scenario()
@@ -146,11 +153,12 @@ def main():
         print("벤치마크 데이터셋 평가 완료.")
 
     elif args.mode in ("allocate", "plan-allocate"):
-        print("[정적 배치] 계획제품×공정×장비모델별 대수 (조합 탐색, 학습 없음)")
+        src = "DB" if args.use_db else f"CSV({args.benchmark_dataset})"
+        print(f"[정적 배치] 데이터 소스: {src}")
         plan_allocation_service.run_static_allocation(
             repo,
             rule_timekey=args.timekey,
-            scenario=args.benchmark_dataset,
+            scenario=data_scenario,
             optimize=not args.no_optimize,
             verbose=args.verbose,
             output_dir=args.output_dir,
@@ -158,11 +166,12 @@ def main():
         print("정적 배치 결과 생성 완료.")
 
     elif args.mode == "train-allocate":
-        print("[RL 정적 배치 학습] 시간 slot 없음 · 대수 이동/추가 정책")
+        src = "DB" if args.use_db else f"CSV({args.benchmark_dataset})"
+        print(f"[RL 정적 배치 학습] 데이터 소스: {src}")
         plan_allocation_service.run_rl_train(
             repo,
             rule_timekey=args.timekey,
-            scenario=args.benchmark_dataset,
+            scenario=data_scenario,
             total_timesteps=args.steps,
             model_path=args.model_path,
             pretrain_bc=not args.no_bc,
@@ -170,11 +179,12 @@ def main():
         print(f"학습 완료: {args.model_path}.zip")
 
     elif args.mode == "infer-allocate":
-        print("[RL 정적 배치 추론] 학습 모델 → 최종 대수표")
+        tk = args.timekey or ("DB MAX(RULE_TIMEKEY)" if args.use_db else "CSV ground_truth")
+        print(f"[RL 정적 배치 추론] RULE_TIMEKEY={tk} → 최종 대수표")
         plan_allocation_service.run_rl_infer(
             repo,
             rule_timekey=args.timekey,
-            scenario=args.benchmark_dataset,
+            scenario=data_scenario,
             model_path=args.model_path,
             output_dir=args.output_dir,
         )

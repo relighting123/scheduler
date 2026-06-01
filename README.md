@@ -25,15 +25,19 @@ python3 run.py -h
 #### 정적 배치 (학습 없음, 조합 탐색)
 
 ```bash
+# CSV (로컬 샘플)
 python3 run.py allocate --benchmark-dataset benchmark_dataset
-python3 run.py allocate --benchmark-dataset benchmark_dataset --no-optimize
-python3 run.py allocate --timekey 20251020070000 --verbose --output-dir output
+
+# 실제 DB (RTS_LINEDSDB_INF)
+python3 run.py allocate --use-db --timekey 20251020070000
+python3 run.py allocate --use-db   # MAX(RULE_TIMEKEY)
 ```
 
 | 옵션 | 설명 |
 |------|------|
-| `--benchmark-dataset` | `test/data/<ID>/` CSV 시나리오 (기본: `benchmark_dataset`) |
-| `--timekey` | RULE_TIMEKEY (`YYYYMMDDHHMMSS`) |
+| `--use-db` | Oracle `RTS_LINEDSDB_INF` 조회 (**실데이터 추론·배치 시 필수**) |
+| `--benchmark-dataset` | CSV 시나리오 (`--use-db` 없을 때, 기본 `benchmark_dataset`) |
+| `--timekey` | RULE_TIMEKEY (`YYYYMMDDHHMMSS`, DB/CSV 필터) |
 | `--no-optimize` | 재배치 탐색 없이 현재 Input만 평가 |
 | `--verbose` | 상세 리포트 |
 | `--output-dir` | JSON/CSV 저장 폴더 (기본 `output/`) |
@@ -45,11 +49,13 @@ python3 run.py allocate --timekey 20251020070000 --verbose --output-dir output
 #### 정적 배치 RL (몇 대 — 시간 slot 없음)
 
 ```bash
-# 학습
+# CSV로 학습/추론
 python3 run.py train-allocate --benchmark-dataset benchmark_dataset --steps 50000
-
-# 추론 (모델: static_allocation_ppo.zip)
 python3 run.py infer-allocate --benchmark-dataset benchmark_dataset
+
+# 실제 DB로 추론
+python3 run.py infer-allocate --use-db --timekey 20251020070000
+python3 run.py infer-allocate --use-db --model-path static_allocation_ppo
 
 # 옵션 예
 python3 run.py train-allocate --steps 50000 --model-path static_allocation_ppo --no-bc
@@ -83,8 +89,9 @@ python3 run.py benchmark --single-benchmark --benchmark-dataset benchmark_datase
 
 **산출물**: `scheduler_ppo_model.zip`, 추론 시 `RTD_CONV` 등 (DB 연동 시)
 
-> `allocate` / `train-allocate` 는 기본적으로 **CSV** (`--benchmark-dataset`)를 봅니다.  
-> `train` / `infer` 는 **Oracle DB** (`config.yaml`) + `RTS_LINEDSDB_INF` 를 봅니다.
+> **실 DB**: `config.yaml` 의 Oracle 접속 정보를 맞춘 뒤 `--use-db` 를 붙입니다.  
+> Input EAV 테이블 **`RTS_LINEDSDB_INF`** 에 해당 `RULE_TIMEKEY` 스냅샷이 있어야 합니다.  
+> `train` / `infer` (시간대 RL)는 기본이 DB이며, `infer` 는 결과를 `RTD_CONV` 등에 씁니다.
 
 ---
 
