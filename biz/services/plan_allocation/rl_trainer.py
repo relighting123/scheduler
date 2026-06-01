@@ -62,7 +62,7 @@ def collect_expert_trajectories(
     return np.array(obs_list, dtype=np.float32), np.array(act_list, dtype=np.int64)
 
 
-def pretrain_bc(model: PPO, obs: np.ndarray, actions: np.ndarray, epochs: int = 15):
+def apply_bc_pretrain(model: PPO, obs: np.ndarray, actions: np.ndarray, epochs: int = 15):
     import torch
     import torch.nn as nn
     from torch.utils.data import DataLoader, TensorDataset
@@ -116,7 +116,7 @@ def train_static_allocation_rl(
     if pretrain_bc:
         obs, acts = collect_expert_trajectories(data, num_episodes=150, max_steps=max_steps)
         if len(obs) > 0:
-            pretrain_bc(model, obs, acts)
+            apply_bc_pretrain(model, obs, acts)
 
     model.learn(total_timesteps=total_timesteps)
     model.save(model_path)
