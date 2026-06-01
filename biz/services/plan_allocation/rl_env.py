@@ -28,11 +28,13 @@ class StaticAllocationEnv(gym.Env):
         data: Dict,
         max_steps: int = 64,
         last_oper_weight: float = 1.5,
+        flow_balance_weight: float = 2.0,
     ):
         super().__init__()
         self.data = data
         self.max_steps = max_steps
         self.last_oper_weight = last_oper_weight
+        self.flow_balance_weight = flow_balance_weight
 
         self.action_space = spaces.Discrete(self.MAX_ACTIONS)
         self.observation_space = spaces.Box(
@@ -60,9 +62,7 @@ class StaticAllocationEnv(gym.Env):
         }
         self._step = 0
         self._refresh_moves()
-        self._prev_obj = _objective(
-            evaluate_allocation(self.problem), self.last_oper_weight
-        )
+        self._prev_obj = self._score(evaluate_allocation(self.problem))
         return self._get_obs(), {}
 
     def step(self, action: int):
@@ -79,7 +79,7 @@ class StaticAllocationEnv(gym.Env):
             reward = 0.0
 
         summary = evaluate_allocation(self.problem)
-        obj = _objective(summary, self.last_oper_weight)
+        obj = self._score(summary)
         reward += (obj - self._prev_obj) * 0.05
         self._prev_obj = obj
 
@@ -141,6 +141,15 @@ class StaticAllocationEnv(gym.Env):
                 vec[pool_off + mi] = used / max(pool, 1)
 
         return vec
+
+    def _score(self, summary):
+        assert self.problem is not None
+        return _objective(
+            summary,
+            self.problem,
+            self.last_oper_weight,
+            self.flow_balance_weight,
+        )
 
     def recommended_allocation(self) -> Dict[str, Dict[str, Dict[str, int]]]:
         assert self.problem is not None

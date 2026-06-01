@@ -12,6 +12,7 @@ from stable_baselines3.common.monitor import Monitor
 from biz.services.plan_allocation.models import build_problem
 from biz.services.plan_allocation.moves import apply_move
 from biz.services.plan_allocation.optimizer import _objective
+from biz.services.plan_allocation.wip_flow import compute_flow_priorities
 from biz.services.plan_allocation.rl_env import StaticAllocationEnv
 from biz.services.plan_allocation.static_capacity import evaluate_allocation
 from biz.services.plan_allocation.static_result import (
@@ -29,16 +30,29 @@ def _best_expert_action(env: StaticAllocationEnv) -> int:
     """한 스텝에서 목적함수를 가장 올리는 액션 (모방학습용)."""
     assert env.problem is not None
     best_idx = 0
-    best_obj = _objective(evaluate_allocation(env.problem), env.last_oper_weight)
+    flow_pri = compute_flow_priorities(env.problem)
+    best_score = env._score(evaluate_allocation(env.problem))
     for idx, move in enumerate(env._moves):
         if move.kind == "noop":
             continue
         trial = env.clone_problem()
         if not apply_move(trial, move):
             continue
-        obj = _objective(evaluate_allocation(trial), env.last_oper_weight)
-        if obj > best_obj + 1e-6:
-            best_obj = obj
+        summary = evaluate_allocation(trial)
+        obj = _objective(
+            summary,
+            trial,
+            env.last_oper_weight,
+            env.flow_balance_weight,
+        )
+        dst_key = None
+        if move.kind == "add":
+            dst_key = trial.slots[move.dst_idx].key.as_tuple()
+        elif move.kind == "transfer":
+            dst_key = trial.slots[move.dst_idx].key.as_tuple()
+        score = obj * flow_pri.get(dst_key, 1.0) if dst_key else obj
+        if score > best_score + 1e-6:
+            best_score = score
             best_idx = idx
     return best_idx
 

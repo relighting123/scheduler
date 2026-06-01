@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from biz.services.plan_allocation.models import PlanAllocationProblem, build_problem
 from biz.services.plan_allocation.static_capacity import (
     PlanAchievementSummary,
     evaluate_allocation,
     marginal_gain_if_add,
+)
+from biz.services.plan_allocation.wip_flow import (
+    compute_flow_priorities,
+    flow_balance_penalty,
 )
 
 
@@ -65,13 +69,22 @@ def _pool_ok(problem: PlanAllocationProblem, model: str, delta: int) -> bool:
     return totals.get(model, 0) + delta <= problem.model_pool.get(model, 0)
 
 
-def _objective(summary: PlanAchievementSummary, last_oper_weight: float = 1.5) -> float:
-    """전체 계획 달성 + 마지막 공정 가중."""
+def _objective(
+    summary: PlanAchievementSummary,
+    problem: PlanAllocationProblem,
+    last_oper_weight: float = 1.5,
+    flow_balance_weight: float = 0.0,
+) -> float:
+    """전체 계획 달성 + 마지막 공정 가중 − 재공 밸런스 페널티."""
     base = summary.overall_achievement
-    if not summary.by_product_last_oper:
-        return base
-    last_avg = sum(summary.by_product_last_oper.values()) / len(summary.by_product_last_oper)
-    return base + (last_oper_weight - 1.0) * last_avg
+    if summary.by_product_last_oper:
+        last_avg = sum(summary.by_product_last_oper.values()) / len(
+            summary.by_product_last_oper
+        )
+        base = base + (last_oper_weight - 1.0) * last_avg
+    if flow_balance_weight > 0:
+        base -= flow_balance_weight * flow_balance_penalty(problem)
+    return base
 
 
 class PlanAllocationOptimizer:
@@ -82,10 +95,12 @@ class PlanAllocationOptimizer:
         data: Dict,
         max_iterations: int = 200,
         last_oper_weight: float = 1.5,
+        flow_balance_weight: float = 2.0,
     ):
         self.data = data
         self.max_iterations = max_iterations
         self.last_oper_weight = last_oper_weight
+        self.flow_balance_weight = flow_balance_weight
 
     def run(self, optimize: bool = True) -> OptimizationResult:
         problem = build_problem(self.data)
@@ -106,9 +121,7 @@ class PlanAllocationOptimizer:
                 trial_moves: List[dict] = []
                 it = self._hill_climb(working, trial_moves)
                 summary = evaluate_allocation(working)
-                if _objective(summary, self.last_oper_weight) > _objective(
-                    best_summary, self.last_oper_weight
-                ):
+                if self._scored_objective(working) > self._scored_objective(best_working):
                     best_working = working
                     best_summary = summary
                     best_moves = trial_moves
@@ -133,14 +146,22 @@ class PlanAllocationOptimizer:
             iterations=0,
         )
 
+    def _scored_objective(self, problem: PlanAllocationProblem) -> float:
+        summary = evaluate_allocation(problem)
+        return _objective(
+            summary,
+            problem,
+            self.last_oper_weight,
+            self.flow_balance_weight,
+        )
+
     def _hill_climb(self, problem: PlanAllocationProblem, moves: List[dict]) -> int:
         iterations = 0
+        flow_pri = compute_flow_priorities(problem)
         while iterations < self.max_iterations:
-            current_obj = _objective(
-                evaluate_allocation(problem), self.last_oper_weight
-            )
+            current_obj = self._scored_objective(problem)
             best_move = None
-            best_obj = current_obj
+            best_score = current_obj
 
             # 같은 모델 1대: 슬롯 A → 슬롯 B 이동
             for src in problem.slots:
@@ -154,12 +175,12 @@ class PlanAllocationOptimizer:
                             continue
                         if not _try_transfer(problem, src, dst, model):
                             continue
-                        trial_obj = _objective(
-                            evaluate_allocation(problem), self.last_oper_weight
-                        )
+                        trial_obj = self._scored_objective(problem)
                         _undo_transfer(problem, src, dst, model)
-                        if trial_obj > best_obj + 1e-6:
-                            best_obj = trial_obj
+                        dst_key = dst.key.as_tuple()
+                        trial_score = trial_obj * flow_pri.get(dst_key, 1.0)
+                        if trial_score > best_score + 1e-6:
+                            best_score = trial_score
                             best_move = ("transfer", src, dst, model, trial_obj)
 
             # 풀 잔여 1대: 미배치 슬롯에 추가
@@ -175,12 +196,12 @@ class PlanAllocationOptimizer:
                     if not _tool_ok(problem, slot, model, new_q):
                         continue
                     slot.allocation[model] = new_q
-                    trial_obj = _objective(
-                        evaluate_allocation(problem), self.last_oper_weight
-                    )
+                    trial_obj = self._scored_objective(problem)
                     slot.allocation[model] = new_q - 1
-                    if trial_obj > best_obj + 1e-6:
-                        best_obj = trial_obj
+                    slot_key = slot.key.as_tuple()
+                    trial_score = trial_obj * flow_pri.get(slot_key, 1.0)
+                    if trial_score > best_score + 1e-6:
+                        best_score = trial_score
                         best_move = ("add", slot, model, trial_obj)
 
             if best_move is None:

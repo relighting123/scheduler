@@ -61,6 +61,16 @@ def run_static_allocation(
     print(f"\n저장: {paths['json']}\n      {paths['csv']}")
 
     if verbose:
+        from biz.services.plan_allocation.wip_flow import describe_flow_balance
+
+        print("\n── 재공 흐름 우선순위 (앞 공정 WIP 적체 시 우선 배치) ──")
+        for row in describe_flow_balance(result.problem)[:15]:
+            print(
+                f"  {row['PLAN_PROD_KEY']}/{row['OPER_ID']}: "
+                f"WIP={row['WIP_QTY']} "
+                f"cover_h={row.get('WIP_COVER_HOURS')} "
+                f"priority={row['FLOW_PRIORITY']}"
+            )
         detail = result_as_json(
             result,
             marginal=optimizer.marginal_report() if include_marginal else None,
