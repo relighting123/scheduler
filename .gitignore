@@ -2,5 +2,6 @@ __pycache__/
 *.py[cod]
 *.zip
 logs/
+output/
 learning_curve.png
 .env

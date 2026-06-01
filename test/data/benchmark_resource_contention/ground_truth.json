@@ -1,0 +1,30 @@
+{
+  "scenario_id": "benchmark_resource_contention",
+  "rule_timekey": "20251020080000",
+  "description": "한정된 고효율 자원(MODEL_A 3대)을 3개 제품(P1, P2, P3)에 골고루 배분하여 평균 달성을 극대화해야 하는 경합 시나리오",
+  "evaluation": {
+    "last_oper_id": "OP20",
+    "products": ["P1", "P2", "P3"],
+    "metric_keys": [
+      "P1_OP20_ACHIEVEMENT",
+      "P2_OP20_ACHIEVEMENT",
+      "P3_OP20_ACHIEVEMENT",
+      "AVG_ACHIEVEMENT",
+      "TRANSFERS"
+    ]
+  },
+  "optimal_reference": {
+    "note": "evaluate_on_benchmark_dataset() 실행 시 OptimalExpert로 재산출하여 비교합니다.",
+    "method": "OptimalExpert",
+    "P1_OP20_ACHIEVEMENT": null,
+    "P2_OP20_ACHIEVEMENT": null,
+    "P3_OP20_ACHIEVEMENT": null,
+    "AVG_ACHIEVEMENT": null,
+    "TRANSFERS": null
+  },
+  "target_allocation": {
+    "P1": {"OP10": {"MODEL_A": 0}, "OP20": {"MODEL_A": 1, "MODEL_B": 8}},
+    "P2": {"OP10": {"MODEL_A": 0}, "OP20": {"MODEL_A": 1, "MODEL_B": 8}},
+    "P3": {"OP10": {"MODEL_A": 0}, "OP20": {"MODEL_A": 1, "MODEL_C": 8}}
+  }
+}
