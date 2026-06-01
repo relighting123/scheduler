@@ -68,6 +68,31 @@ class TaskProcessor:
             datasets = params.get("benchmark_datasets")
             rl_service.run_benchmark_evaluation(datasets=datasets)
             return True
+        elif action in ("rl_train_allocate", "rl_static_train"):
+            logger.info("RL static allocation training...")
+            input_tk = params.get("rule_timekey") or (
+                rule_timekey if rule_timekey not in ("N/A", "") else None
+            )
+            return plan_allocation_service.run_rl_train(
+                self.repo,
+                rule_timekey=input_tk,
+                scenario=params.get("benchmark_dataset") or params.get("scenario"),
+                total_timesteps=int(params.get("total_timesteps", 50000)),
+                model_path=params.get("model_path", "static_allocation_ppo"),
+                pretrain_bc=params.get("pretrain_bc", True),
+            )
+        elif action in ("rl_infer_allocate", "rl_static_infer"):
+            logger.info("RL static allocation inference...")
+            input_tk = params.get("rule_timekey") or (
+                rule_timekey if rule_timekey not in ("N/A", "") else None
+            )
+            return plan_allocation_service.run_rl_infer(
+                self.repo,
+                rule_timekey=input_tk,
+                scenario=params.get("benchmark_dataset") or params.get("scenario"),
+                model_path=params.get("model_path", "static_allocation_ppo"),
+                output_dir=params.get("output_dir", "output"),
+            )
         elif action in (
             "static_allocate",
             "static_allocation",

@@ -13,6 +13,11 @@ from biz.services.plan_allocation.static_result import (
     save_static_allocation_files,
     static_allocation_payload,
 )
+from biz.services.plan_allocation.rl_trainer import (
+    DEFAULT_MODEL_PATH,
+    run_static_allocation_rl,
+    train_static_allocation_rl,
+)
 from biz.services.plan_allocation.test_data_loader import TestDataLoader
 
 logger = logging.getLogger(__name__)
@@ -67,6 +72,50 @@ def run_static_allocation(
 
     logger.info("Static allocation completed: %s rows", len(rows["allocation_table"]))
     return rows
+
+
+def run_rl_train(
+    repo=None,
+    rule_timekey: Optional[str] = None,
+    *,
+    scenario: Optional[str] = "benchmark_dataset",
+    total_timesteps: int = 50_000,
+    model_path: str = DEFAULT_MODEL_PATH,
+    pretrain_bc: bool = True,
+) -> str:
+    """정적 배치 PPO 학습 (시간 slot 없음)."""
+    data = _load_input_data(repo, rule_timekey=rule_timekey, scenario=scenario)
+    train_static_allocation_rl(
+        data,
+        total_timesteps=total_timesteps,
+        model_path=model_path,
+        pretrain_bc=pretrain_bc,
+    )
+    return model_path
+
+
+def run_rl_infer(
+    repo=None,
+    rule_timekey: Optional[str] = None,
+    *,
+    scenario: Optional[str] = "benchmark_dataset",
+    model_path: str = DEFAULT_MODEL_PATH,
+    output_dir: str = "output",
+) -> Dict[str, Any]:
+    """학습된 PPO로 정적 배치표 추론."""
+    data = _load_input_data(repo, rule_timekey=rule_timekey, scenario=scenario)
+    resolved_tk = rule_timekey
+    if not resolved_tk and scenario:
+        try:
+            resolved_tk = TestDataLoader().load_ground_truth(scenario).get("rule_timekey")
+        except Exception:
+            pass
+    return run_static_allocation_rl(
+        data,
+        model_path=model_path,
+        rule_timekey=resolved_tk,
+        output_dir=output_dir,
+    )
 
 
 # 하위 호환 alias

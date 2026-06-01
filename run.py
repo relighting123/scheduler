@@ -11,8 +11,16 @@ def main():
     )
     parser.add_argument(
         "mode",
-        choices=["allocate", "plan-allocate", "train", "infer", "benchmark"],
-        help="allocate|plan-allocate: 정적 대수(학습X), train|infer: RL, benchmark: 평가",
+        choices=[
+            "allocate",
+            "plan-allocate",
+            "train-allocate",
+            "infer-allocate",
+            "train",
+            "infer",
+            "benchmark",
+        ],
+        help="train-allocate/infer-allocate=정적대수 RL, allocate=조합탐색, train/infer=시간대 RL",
     )
     parser.add_argument(
         "--from-timekey",
@@ -80,6 +88,18 @@ def main():
         dest="output_dir",
         help="allocate: JSON/CSV 저장 폴더 (기본 output/)",
     )
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        default="static_allocation_ppo",
+        dest="model_path",
+        help="train-allocate/infer-allocate: PPO 모델 경로 (확장자 제외)",
+    )
+    parser.add_argument(
+        "--no-bc",
+        action="store_true",
+        help="train-allocate: 모방학습(Expert) 사전학습 생략",
+    )
 
     args = parser.parse_args()
 
@@ -126,7 +146,7 @@ def main():
         print("벤치마크 데이터셋 평가 완료.")
 
     elif args.mode in ("allocate", "plan-allocate"):
-        print("[정적 배치] 계획제품×공정×장비모델별 대수 (시간대 판단 없음)")
+        print("[정적 배치] 계획제품×공정×장비모델별 대수 (조합 탐색, 학습 없음)")
         plan_allocation_service.run_static_allocation(
             repo,
             rule_timekey=args.timekey,
@@ -136,6 +156,29 @@ def main():
             output_dir=args.output_dir,
         )
         print("정적 배치 결과 생성 완료.")
+
+    elif args.mode == "train-allocate":
+        print("[RL 정적 배치 학습] 시간 slot 없음 · 대수 이동/추가 정책")
+        plan_allocation_service.run_rl_train(
+            repo,
+            rule_timekey=args.timekey,
+            scenario=args.benchmark_dataset,
+            total_timesteps=args.steps,
+            model_path=args.model_path,
+            pretrain_bc=not args.no_bc,
+        )
+        print(f"학습 완료: {args.model_path}.zip")
+
+    elif args.mode == "infer-allocate":
+        print("[RL 정적 배치 추론] 학습 모델 → 최종 대수표")
+        plan_allocation_service.run_rl_infer(
+            repo,
+            rule_timekey=args.timekey,
+            scenario=args.benchmark_dataset,
+            model_path=args.model_path,
+            output_dir=args.output_dir,
+        )
+        print("RL 정적 배치 추론 완료.")
 
 if __name__ == "__main__":
     main()

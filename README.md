@@ -20,8 +20,9 @@ python3 run.py allocate --benchmark-dataset benchmark_dataset
 
 | 모드 | 설명 |
 |------|------|
-| `allocate` | Input만으로 **정적** 최적 대수 (권장) |
-| `train` / `infer` | 1시간 slot **강화학습** (선택) |
+| `allocate` | 정적 최적 대수 (조합 탐색, 학습 없음) |
+| `train-allocate` / `infer-allocate` | **정적 대수 RL** (몇 대 — 시간 slot 없음) |
+| `train` / `infer` | 1시간 slot RL (선택) |
 
 ```bash
 python3 run.py -h

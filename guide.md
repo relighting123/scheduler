@@ -92,9 +92,10 @@ PLAN PROD KEY와 OPER ID별로 배치된 장비들의 UPH를 통해 UPH만큼 �
 
 | 명령 | 학습 | 용도 |
 |------|------|------|
-| `python3 run.py allocate` | 없음 | 정적 배치표 (권장) |
-| `python3 run.py train` | PPO | 시간대별 RL 정책 학습 |
-| `python3 run.py infer` | 모델 필요 | RL 추론 |
+| `python3 run.py allocate` | 없음 | 정적 배치 (조합 탐색) |
+| `python3 run.py train-allocate` | PPO | **정적 대수** RL 학습 |
+| `python3 run.py infer-allocate` | 모델 권장 | **정적 대수** RL 추론 |
+| `python3 run.py train` / `infer` | PPO | 시간대별 slot RL |
 | `python3 run.py benchmark` | 모델 권장 | 벤치마크 평가 |
 
 [7-1] 학습·추론 RULE_TIMEKEY 운영
